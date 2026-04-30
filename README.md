@@ -33,3 +33,6 @@ omoku_gui.py # GUI 구현 (사용자 인터페이스)
 
 ## 실행 방법
 python omoku_gui.py
+
+## 공부 자료
+https://github.com/goni-ssi/AI_Omok_game.git (김민서)
