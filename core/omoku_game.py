@@ -8,8 +8,7 @@
 #   - GUI 없이 콘솔에서도 단독 실행 가능
 # ============================================================
 
-from omoku_rules import EMPTY, BLACK, WHITE, check_win, is_forbidden
-
+from core.omoku_rules import EMPTY, BLACK, WHITE, check_win, is_forbidden
 DEFAULT_SIZE = 15   # 표준 오목판 크기
 
 
