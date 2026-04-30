@@ -17,3 +17,4 @@ class OmokuAI:
         if not empty_cells:
             return (size // 2, size // 2)
         return random.choice(empty_cells)
+

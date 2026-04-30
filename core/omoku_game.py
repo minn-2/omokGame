@@ -9,6 +9,10 @@
 # ============================================================
 
 from core.omoku_rules import EMPTY, BLACK, WHITE, check_win, is_forbidden
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
 DEFAULT_SIZE = 15   # 표준 오목판 크기
 
 
