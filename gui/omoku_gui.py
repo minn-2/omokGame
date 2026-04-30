@@ -13,9 +13,9 @@
 
 import tkinter as tk
 from tkinter import messagebox, font as tkfont
-from omoku_game import GomokuGame
-from omoku_rules import BLACK, WHITE, EMPTY
-from omoku_ai import OmokuAI
+from core.omoku_game import GomokuGame
+from core.omoku_rules import BLACK, WHITE, EMPTY
+from ai.omoku_ai import OmokuAI
 
 # ── 상수 ────────────────────────────────────────────────────
 BOARD_SIZE  = 15
