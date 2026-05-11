@@ -1,282 +1,307 @@
-import pygame
+import tkinter as tk
+from tkinter import messagebox
 import os
 import sys
-sys.path.append(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))
 
-from core.Board  import Board
-from ai.agent    import PPOAgent
-from ai.engine   import Engine
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.chdir(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.Board import Board
+from core.Rules import Rules
+from ai.engine  import Engine
 
 # 색상
-BLACK     = (0,   0,   0  )
-WHITE     = (255, 255, 255)
-BROWN     = (185, 122, 87 )
-BTN_BLACK = (50,  50,  50 )
-BTN_BLUE  = (70,  130, 180)
+BG_COLOR    = '#FFFAE9'
+BOARD_COLOR = '#DCB468'
+LINE_COLOR  = '#8B6914'
+BLACK_COLOR = '#000000'
+WHITE_COLOR = '#FFFFFF'
 
-# 화면 설정
-CELL_SIZE  = 40
-BOARD_SIZE = 15
-MARGIN     = 40
-SCREEN_W   = CELL_SIZE * (BOARD_SIZE - 1) + MARGIN * 2
-SCREEN_H   = CELL_SIZE * (BOARD_SIZE - 1) + MARGIN * 2 + 60
+# 설정
+CELL_SIZE   = 38
+BOARD_SIZE  = 15
+MARGIN      = 30
+CANVAS_SIZE = CELL_SIZE * (BOARD_SIZE - 1) + MARGIN * 2
+WIN_W       = 805
+WIN_H       = 552
 
 
 class Play:
     def __init__(self):
-        pygame.init()
-        self.screen   = pygame.display.set_mode((SCREEN_W, SCREEN_H))
-        pygame.display.set_caption('오목 게임')
-        self.font     = pygame.font.SysFont('malgungothic', 20)
-        self.big_font = pygame.font.SysFont('malgungothic', 30)
+        self.window = tk.Tk()
+        self.window.title('오목 게임')
+        self.window.resizable(False, False)
+        self.window.configure(bg=BG_COLOR)
 
-        # 게임 상태
-        self.scene        = 'start'  # start → select → game
-        self.mode         = None     # human / ai
-        self.human_player = 1        # 1=흑돌, 2=백돌
-        self.engine       = None
-        self.agent        = None
+        self.mode      = None
+        self.engine    = None
+        self.last_move = None
 
-    # ─────────────────── 화면 그리기
+        self.show_start_screen()
 
-    def draw_start_screen(self):
-        """시작 화면"""
-        self.screen.fill(BROWN)
+    # 시작 화면
+    def show_start_screen(self):
+        for w in self.window.winfo_children():
+            w.destroy()
 
-        title = self.big_font.render('오목 게임', True, BLACK)
-        self.screen.blit(title,
-            (SCREEN_W//2 - title.get_width()//2, 150))
+        self.window.geometry(f'{WIN_W}x{WIN_H}')
+        self.window.configure(bg=BG_COLOR)
 
-        # 인간 vs 인간
-        pygame.draw.rect(self.screen, BTN_BLACK,
-            (SCREEN_W//2-120, 250, 240, 60), border_radius=10)
-        t1 = self.font.render('인간 vs 인간', True, WHITE)
-        self.screen.blit(t1,
-            (SCREEN_W//2 - t1.get_width()//2, 268))
+        # 전체 중앙 정렬 프레임
+        center = tk.Frame(self.window, bg=BG_COLOR)
+        center.place(relx=0.5, rely=0.5, anchor='center')
 
-        # 인간 vs AI
-        pygame.draw.rect(self.screen, BTN_BLUE,
-            (SCREEN_W//2-120, 340, 240, 60), border_radius=10)
-        t2 = self.font.render('인간 vs AI', True, WHITE)
-        self.screen.blit(t2,
-            (SCREEN_W//2 - t2.get_width()//2, 358))
+        # 타이틀
+        tk.Label(center,
+            text='오목 게임',
+            font=('맑은 고딕', 36, 'bold'),
+            bg=BG_COLOR, fg=BLACK_COLOR
+        ).pack(pady=(0, 40))
 
-        pygame.display.flip()
+        # 인간 vs 인간 버튼
+        tk.Button(center,
+            text='인간  vs  인간',
+            font=('맑은 고딕', 14),
+            bg=BLACK_COLOR, fg=BG_COLOR,
+            activebackground='#333333',
+            activeforeground=BG_COLOR,
+            width=16, height=2,
+            relief='flat', cursor='hand2',
+            command=self.start_human_game
+        ).pack(pady=8)
 
-    def draw_select_screen(self):
-        """흑돌 / 백돌 선택 화면"""
-        self.screen.fill(BROWN)
+        # 인간 vs AI 버튼
+        tk.Button(center,
+            text='인간  vs  AI',
+            font=('맑은 고딕', 14),
+            bg=WHITE_COLOR, fg=BLACK_COLOR,
+            activebackground='#EEEEEE',
+            activeforeground=BLACK_COLOR,
+            width=16, height=2,
+            relief='solid', cursor='hand2',
+            bd=1,
+            command=self.start_ai_game
+        ).pack(pady=8)
 
-        title = self.big_font.render('돌 색상 선택', True, BLACK)
-        self.screen.blit(title,
-            (SCREEN_W//2 - title.get_width()//2, 150))
+    # 게임 화면
+    def show_game_screen(self):
+        for w in self.window.winfo_children():
+            w.destroy()
 
-        sub = self.font.render('(흑돌이 선공입니다)', True, BTN_BLACK)
-        self.screen.blit(sub,
-            (SCREEN_W//2 - sub.get_width()//2, 200))
+        self.window.geometry(f'{WIN_W}x{WIN_H}')
+        self.window.configure(bg=BG_COLOR)
 
-        # 흑돌 버튼
-        pygame.draw.circle(self.screen, BLACK,
-            (SCREEN_W//2-80, 300), 35)
-        t1 = self.font.render('흑돌', True, WHITE)
-        self.screen.blit(t1,
-            (SCREEN_W//2-80 - t1.get_width()//2, 345))
+        # 왼쪽: 바둑판
+        left = tk.Frame(self.window, bg=BG_COLOR)
+        left.pack(side='left', padx=10, pady=10)
 
-        # 백돌 버튼
-        pygame.draw.circle(self.screen, WHITE,
-            (SCREEN_W//2+80, 300), 35)
-        pygame.draw.circle(self.screen, BLACK,
-            (SCREEN_W//2+80, 300), 35, 2)
-        t2 = self.font.render('백돌', True, BLACK)
-        self.screen.blit(t2,
-            (SCREEN_W//2+80 - t2.get_width()//2, 345))
+        self.canvas = tk.Canvas(left,
+            width=CANVAS_SIZE,
+            height=CANVAS_SIZE,
+            bg=BOARD_COLOR,
+            highlightthickness=2,
+            highlightbackground=LINE_COLOR)
+        self.canvas.pack()
+        self.canvas.bind('<Button-1>', self.on_click)
 
-        pygame.display.flip()
+        # 오른쪽: 정보 패널
+        right = tk.Frame(self.window,
+            bg=BLACK_COLOR, width=240)
+        right.pack(side='right', fill='y')
+        right.pack_propagate(False)
 
+        # 타이틀
+        tk.Label(right,
+            text='오목 게임',
+            font=('맑은 고딕', 20, 'bold'),
+            bg=BLACK_COLOR, fg=BG_COLOR,
+            pady=20
+        ).pack(fill='x')
+
+        # 구분선
+        tk.Frame(right, bg='#444444',
+            height=1).pack(fill='x', padx=20)
+
+        # 차례 표시 영역
+        turn_frame = tk.Frame(right, bg=BLACK_COLOR)
+        turn_frame.pack(pady=40)
+
+        tk.Label(turn_frame,
+            text='현재 차례',
+            font=('맑은 고딕', 11),
+            bg=BLACK_COLOR, fg='#AAAAAA'
+        ).pack(pady=(0, 10))
+
+        self.turn_label = tk.Label(turn_frame,
+            text='흑돌',
+            font=('맑은 고딕', 20, 'bold'),
+            bg=BLACK_COLOR, fg=WHITE_COLOR)
+        self.turn_label.pack()
+
+        # 구분선
+        tk.Frame(right, bg='#444444',
+            height=1).pack(fill='x', padx=20, pady=20)
+
+        # 모드 표시
+        mode_str = ('인간 vs 인간'
+            if self.mode == 'human' else '인간 vs AI')
+        tk.Label(right,
+            text=mode_str,
+            font=('맑은 고딕', 11),
+            bg=BLACK_COLOR, fg='#AAAAAA'
+        ).pack()
+
+        # 처음으로 버튼
+        tk.Button(right,
+            text='처음으로',
+            font=('맑은 고딕', 12),
+            bg=BG_COLOR, fg=BLACK_COLOR,
+            activebackground='#EEEEEE',
+            relief='flat', cursor='hand2',
+            pady=8, width=12,
+            command=self.show_start_screen
+        ).pack(side='bottom', pady=30)
+
+        self.draw_board()
+
+    # 보드 그리기
     def draw_board(self):
-        """게임 보드 화면"""
-        self.screen.fill(BROWN)
+        self.canvas.delete('all')
 
         # 바둑판 선
         for i in range(BOARD_SIZE):
-            pygame.draw.line(self.screen, BLACK,
-                (MARGIN + i*CELL_SIZE, MARGIN),
-                (MARGIN + i*CELL_SIZE,
-                 MARGIN + (BOARD_SIZE-1)*CELL_SIZE), 1)
-            pygame.draw.line(self.screen, BLACK,
-                (MARGIN, MARGIN + i*CELL_SIZE),
-                (MARGIN + (BOARD_SIZE-1)*CELL_SIZE,
-                 MARGIN + i*CELL_SIZE), 1)
+            self.canvas.create_line(
+                MARGIN + i*CELL_SIZE, MARGIN,
+                MARGIN + i*CELL_SIZE,
+                MARGIN + (BOARD_SIZE-1)*CELL_SIZE,
+                fill=LINE_COLOR, width=1)
+            self.canvas.create_line(
+                MARGIN, MARGIN + i*CELL_SIZE,
+                MARGIN + (BOARD_SIZE-1)*CELL_SIZE,
+                MARGIN + i*CELL_SIZE,
+                fill=LINE_COLOR, width=1)
+
+        # 화점
+        for sr in [3, 7, 11]:
+            for sc in [3, 7, 11]:
+                cx = MARGIN + sc*CELL_SIZE
+                cy = MARGIN + sr*CELL_SIZE
+                self.canvas.create_oval(
+                    cx-4, cy-4, cx+4, cy+4,
+                    fill=LINE_COLOR, outline='')
+
+        # 금수 X 표시 (흑돌 차례)
+        if (self.engine.current_player == 1
+                and not self.engine.is_over):
+            for i in range(BOARD_SIZE):
+                for j in range(BOARD_SIZE):
+                    if (self.engine.board.board[i][j] == 0 and
+                            Rules.is_forbidden(
+                                self.engine.board.board,
+                                i, j, 1)):
+                        cx = MARGIN + j*CELL_SIZE
+                        cy = MARGIN + i*CELL_SIZE
+                        self.canvas.create_line(
+                            cx-7, cy-7, cx+7, cy+7,
+                            fill='red', width=2)
+                        self.canvas.create_line(
+                            cx+7, cy-7, cx-7, cy+7,
+                            fill='red', width=2)
 
         # 돌 그리기
         for i in range(BOARD_SIZE):
             for j in range(BOARD_SIZE):
+                cx = MARGIN + j*CELL_SIZE
+                cy = MARGIN + i*CELL_SIZE
+
                 if self.engine.board.board[i][j] == 1:
-                    pygame.draw.circle(self.screen, BLACK,
-                        (MARGIN + j*CELL_SIZE,
-                         MARGIN + i*CELL_SIZE), 18)
+                    # 흑돌
+                    self.canvas.create_oval(
+                        cx-16, cy-16, cx+16, cy+16,
+                        fill='black', outline='black')
+                    self.canvas.create_oval(
+                        cx-10, cy-10, cx-3, cy-3,
+                        fill='#555555', outline='')
+
                 elif self.engine.board.board[i][j] == 2:
-                    pygame.draw.circle(self.screen, WHITE,
-                        (MARGIN + j*CELL_SIZE,
-                         MARGIN + i*CELL_SIZE), 18)
-                    pygame.draw.circle(self.screen, BLACK,
-                        (MARGIN + j*CELL_SIZE,
-                         MARGIN + i*CELL_SIZE), 18, 1)
+                    # 백돌
+                    self.canvas.create_oval(
+                        cx-16, cy-16, cx+16, cy+16,
+                        fill='white', outline='black', width=2)
+                    self.canvas.create_oval(
+                        cx-10, cy-10, cx-3, cy-3,
+                        fill='#E0E0E0', outline='')
 
-        # 상태 표시
+        # 마지막 착수 (빨간 점)
+        if self.last_move:
+            li, lj = self.last_move
+            cx     = MARGIN + lj*CELL_SIZE
+            cy     = MARGIN + li*CELL_SIZE
+            self.canvas.create_oval(
+                cx-5, cy-5, cx+5, cy+5,
+                fill='red', outline='')
+
+        # 차례 텍스트 업데이트
+        self.update_turn_display()
+
+    def update_turn_display(self):
         if self.engine.is_over:
-            if self.engine.winner == 0:
-                status = '무승부!'
-            elif self.engine.winner == 1:
-                status = '흑돌 승리!'
-            else:
-                status = '백돌 승리!'
+            return
+
+        if self.engine.current_player == 1:
+            self.turn_label.config(text='흑돌')
         else:
-            status = '흑돌 차례' \
-                if self.engine.current_player == 1 \
-                else '백돌 차례'
+            self.turn_label.config(text='백돌')
 
-        self.screen.blit(
-            self.font.render(status, True, BLACK),
-            (MARGIN, SCREEN_H-50))
-
-        # 리셋 버튼
-        pygame.draw.rect(self.screen, BTN_BLACK,
-            (SCREEN_W-120, SCREEN_H-55, 100, 40),
-            border_radius=8)
-        reset_text = self.font.render('Reset', True, WHITE)
-        self.screen.blit(reset_text,
-            (SCREEN_W-70 - reset_text.get_width()//2,
-             SCREEN_H-45))
-
-        pygame.display.flip()
-
-    # ─────────────────── 좌표 변환
-
-    def get_board_pos(self, mx, my):
-        j = round((mx - MARGIN) / CELL_SIZE)
-        i = round((my - MARGIN) / CELL_SIZE)
-        if 0 <= i < BOARD_SIZE and 0 <= j < BOARD_SIZE:
-            return i, j
-        return None, None
-
-    # ─────────────────── 게임 시작 / 리셋
-
-    def start_game(self):
-        self.engine = Engine(BOARD_SIZE)
-        if self.mode == 'ai':
-            ai_player  = 3 - self.human_player
-            self.agent = PPOAgent(BOARD_SIZE, player=ai_player)
-
-    def reset_game(self):
-        self.scene        = 'start'
-        self.mode         = None
-        self.human_player = 1
-        self.engine       = None
-        self.agent        = None
-
-    # ─────────────────── AI 착수
-
-    def ai_move(self):
-        if self.agent is None or self.engine.is_over:
+    # 클릭 이벤트
+    def on_click(self, event):
+        if self.engine.is_over:
             return
-        if self.engine.current_player != self.agent.player:
+
+        j = round((event.x - MARGIN) / CELL_SIZE)
+        i = round((event.y - MARGIN) / CELL_SIZE)
+
+        if not (0 <= i < BOARD_SIZE and 0 <= j < BOARD_SIZE):
             return
-        move = self.agent.decide_next_move(self.engine)
-        if move:
-            self.engine.make_move(*move)
-            reward = self.agent.calculate_reward(self.engine)
-            self.agent.store_reward(reward)
 
-    # ─────────────────── 메인 루프
+        if self.engine.make_move(i, j):
+            self.last_move = (i, j)
+            self.draw_board()
+            self.check_game_over()
 
+    # 게임 종료
+    def check_game_over(self):
+        if not self.engine.is_over:
+            return
+
+        if self.engine.winner == 1:
+            msg = '흑돌이 이겼습니다!'
+        elif self.engine.winner == 2:
+            msg = '백돌이 이겼습니다!'
+        else:
+            msg = '무승부입니다!'
+
+        self.turn_label.config(text=msg)
+        messagebox.showinfo('게임 종료', msg)
+        self.show_start_screen()
+
+    # 게임 시작
+    def start_human_game(self):
+        self.mode      = 'human'
+        self.engine    = Engine(BOARD_SIZE)
+        self.last_move = None
+        self.show_game_screen()
+
+    def start_ai_game(self):
+        messagebox.showinfo('안내', '추후 구현 예정입니다!')
+
+    # 실행
     def run(self):
-        clock = pygame.time.Clock()
-
-        while True:
-
-            # 시작 화면
-            if self.scene == 'start':
-                self.draw_start_screen()
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        return
-                    if event.type == pygame.MOUSEBUTTONDOWN:
-                        mx, my = event.pos
-                        # 인간 vs 인간
-                        if (SCREEN_W//2-120 <= mx <= SCREEN_W//2+120
-                                and 250 <= my <= 310):
-                            self.mode  = 'human'
-                            self.scene = 'game'
-                            self.start_game()
-                        # 인간 vs AI
-                        elif (SCREEN_W//2-120 <= mx <= SCREEN_W//2+120
-                                and 340 <= my <= 400):
-                            self.mode  = 'ai'
-                            self.scene = 'select'
-
-            # 돌 색상 선택 화면
-            elif self.scene == 'select':
-                self.draw_select_screen()
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        return
-                    if event.type == pygame.MOUSEBUTTONDOWN:
-                        mx, my = event.pos
-                        # 흑돌 선택
-                        if ((mx-(SCREEN_W//2-80))**2
-                                + (my-300)**2 <= 35**2):
-                            self.human_player = 1
-                            self.scene        = 'game'
-                            self.start_game()
-                        # 백돌 선택
-                        elif ((mx-(SCREEN_W//2+80))**2
-                                + (my-300)**2 <= 35**2):
-                            self.human_player = 2
-                            self.scene        = 'game'
-                            self.start_game()
-
-            # 게임 화면
-            elif self.scene == 'game':
-                # AI 차례 자동 착수
-                if self.mode == 'ai' and not self.engine.is_over:
-                    self.ai_move()
-
-                self.draw_board()
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        return
-                    if event.type == pygame.MOUSEBUTTONDOWN:
-                        mx, my = event.pos
-                        # 리셋 버튼
-                        if (SCREEN_W-120 <= mx <= SCREEN_W-20
-                                and SCREEN_H-55 <= my <= SCREEN_H-15):
-                            self.reset_game()
-                        # 보드 클릭
-                        else:
-                            i, j = self.get_board_pos(mx, my)
-                            if i is not None and not self.engine.is_over:
-                                if self.mode == 'human':
-                                    self.engine.make_move(i, j)
-                                elif (self.mode == 'ai' and
-                                      self.engine.current_player
-                                      == self.human_player):
-                                    self.engine.make_move(i, j)
-
-            clock.tick(30)
-
+        self.window.mainloop()
 
 # main
 if __name__ == '__main__':
-    import sys
-    import os
-    # 프로젝트 루트 경로 추가
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    
     game = Play()
     game.run()
