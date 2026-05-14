@@ -289,3 +289,26 @@ class Rules:
                     count += 1
 
         return count
+    # 패턴 검사 (AI 학습 보상 계산용)
+    @staticmethod
+    def check_patterns(board, player, length):
+        board_size = len(board)
+        count = 0
+        
+        # 가로, 세로, 대각선 모든 위치에서 해당 길이의 연속된 돌이 있는지 검사
+        for r in range(board_size):
+            for c in range(board_size):
+                if board[r, c] == player:
+                    for dr, dc in Rules.DIRECTIONS:
+                        # 한 방향으로 탐색
+                        match = True
+                        for i in range(1, length):
+                            nr, nc = r + dr * i, c + dc * i
+                            if not (0 <= nr < board_size and 0 <= nc < board_size and board[nr, nc] == player):
+                                match = False
+                                break
+                        
+                        if match:
+                            # 양 끝이 막혀있는지 등 세부 조건 없이 단순 길이만 체크
+                            count += 1
+        return count
