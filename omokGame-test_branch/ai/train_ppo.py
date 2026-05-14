@@ -5,7 +5,7 @@ from ai.agent   import PPOAgent
 # 학습 하이퍼파라미터
 BOARD_SIZE   = 15
 NUM_EPISODES = 10000
-PLAYER       = 2      # AI = 백돌
+PLAYER       = 2
 
 def train():
     engine = Engine(BOARD_SIZE)
