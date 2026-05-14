@@ -10,7 +10,7 @@ class Board:
     def reset(self):
         # 2차원 넘파이 배열 생성 | 0: 빈칸, 1: 흑돌, 2: 백돌
         self.board          = np.zeros(
-            (self.board_size, self.board_size), dtype=int)
+            (self.board_size, self.board_size), dtype=int) 
         self.current_player = 1  # 렌주룰에 따라 흑돌(1)이 항상 선공
         self.is_over        = False # 게임 종료 플래그 (True 시 착수 중단)
         self.winner         = None # 승리자 정보 (None: 진행 중, 0: 무승부, 1: 흑, 2: 백)
