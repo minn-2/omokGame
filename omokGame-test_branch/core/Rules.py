@@ -12,7 +12,7 @@ class Rules:
         
         # 4가지 모든 방향에 대해 연속된 돌의 개수를 세기 시작
         for dr, dc in Rules.DIRECTIONS:
-            count = 1 # 현재 놓은 돌을 포함하여 1부터 시작
+            count = 1 # 현재 놓은 돌을 포함하여 1부터 시작 
             
             # 한 방향(sign=1)과 그 반대 방향(sign=-1)을 모두 확인하여 총 개수 합산
             for sign in [1, -1]:
