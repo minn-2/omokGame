@@ -8,6 +8,7 @@ from ai.model import PPOModel
 
 
 class Memory:
+    """경험 저장 버퍼"""
 
     def __init__(self):
 
@@ -34,6 +35,7 @@ class PPOAgent:
             gamma=0.99,
             eps_clip=0.2):
 
+        # GPU 사용 가능 시 CUDA 사용
         self.device = torch.device(
             'cuda'
             if torch.cuda.is_available()
@@ -45,29 +47,32 @@ class PPOAgent:
         self.gamma = gamma
         self.eps_clip = eps_clip
 
+        # 프로젝트 루트 경로
         BASE_DIR = os.path.dirname(
             os.path.dirname(
                 os.path.abspath(__file__)
             )
         )
 
+        # 모델 저장 경로
         self.weights_path = os.path.join(
             BASE_DIR,
             'models',
             'ppo_p{}.pt'.format(player)
         )
 
-        # PPO 모델
+        # PPO 현재 정책
         self.policy = PPOModel(
             board_size
         ).to(self.device)
 
+        # Optimizer
         self.optimizer = optim.Adam(
             self.policy.parameters(),
             lr=lr
         )
 
-        # 이전 정책
+        # PPO 이전 정책
         self.policy_old = PPOModel(
             board_size
         ).to(self.device)
@@ -76,11 +81,13 @@ class PPOAgent:
             self.policy.state_dict()
         )
 
+        # Loss 함수
         self.MseLoss = nn.MSELoss()
 
+        # 경험 메모리
         self.memory = Memory()
 
-        # 저장 모델 불러오기
+        # 저장된 모델 불러오기
         if os.path.isfile(self.weights_path):
 
             print(
@@ -109,6 +116,7 @@ class PPOAgent:
             state,
             valid_moves):
 
+        # Tensor 변환
         state = torch.tensor(
             state,
             dtype=torch.float32
@@ -119,6 +127,7 @@ class PPOAgent:
 
             state = state.unsqueeze(0)
 
+        # 이전 정책 추론
         with torch.no_grad():
 
             probs, _ = self.policy_old(state)
@@ -137,6 +146,7 @@ class PPOAgent:
 
             mask[idx] = 1
 
+        # 불가능한 위치 제거
         masked_probs = probs.squeeze() * mask
 
         # 확률 정규화
@@ -154,8 +164,10 @@ class PPOAgent:
                 mask / (mask.sum() + 1e-8)
             )
 
+        # 확률 분포 생성
         dist = Categorical(masked_probs)
 
+        # 행동 선택
         action = dist.sample()
 
         return (
@@ -163,7 +175,7 @@ class PPOAgent:
             dist.log_prob(action)
         )
 
-    # 다음 착수 결정
+    # 다음 수 결정
     def decide_next_move(
             self,
             engine):
@@ -172,10 +184,12 @@ class PPOAgent:
 
         valid_moves = engine.get_valid_moves()
 
+        # 가능한 수 없으면 종료
         if len(valid_moves) == 0:
 
             return None
 
+        # 행동 선택
         action, log_prob = self.select_action(
             state,
             valid_moves
@@ -187,6 +201,7 @@ class PPOAgent:
             dtype=torch.float32
         ).to(self.device)
 
+        # [1,1,15,15] -> [1,15,15]
         if (
             state_tensor.dim() == 4
             and state_tensor.size(0) == 1
@@ -207,7 +222,7 @@ class PPOAgent:
             ).to(self.device)
         )
 
-        # 로그확률 저장
+        # 로그 확률 저장
         self.memory.logprobs.append(
             log_prob.detach()
         )
@@ -245,7 +260,7 @@ class PPOAgent:
 
         opponent = 3 - self.player
 
-        # 패턴 보상
+        # 공격 패턴
         num_my_4 = engine.check_patterns(
             self.player,
             4
@@ -256,6 +271,7 @@ class PPOAgent:
             3
         )
 
+        # 상대 패턴
         num_op_4 = engine.check_patterns(
             opponent,
             4
@@ -274,6 +290,7 @@ class PPOAgent:
         reward -= num_op_4 * 4.0
         reward -= num_op_3 * 1.5
 
+        # Reward clipping
         return max(
             min(reward, 20.0),
             -20.0
@@ -282,11 +299,12 @@ class PPOAgent:
     # PPO 업데이트
     def update(self):
 
+        # 경험 없으면 종료
         if len(self.memory.rewards) == 0:
 
             return
 
-        # 할인 보상 계산
+        # 할인 누적 보상 계산
         discounted_rewards = []
 
         discounted_reward = 0
@@ -305,6 +323,31 @@ class PPOAgent:
                 discounted_reward
             )
 
+        # 데이터 길이 동기화
+        min_size = min(
+            len(self.memory.states),
+            len(self.memory.actions),
+            len(self.memory.logprobs),
+            len(discounted_rewards)
+        )
+
+        self.memory.states = (
+            self.memory.states[:min_size]
+        )
+
+        self.memory.actions = (
+            self.memory.actions[:min_size]
+        )
+
+        self.memory.logprobs = (
+            self.memory.logprobs[:min_size]
+        )
+
+        discounted_rewards = (
+            discounted_rewards[:min_size]
+        )
+
+        # Tensor 변환
         states = torch.stack(
             self.memory.states
         ).to(self.device).detach()
@@ -334,25 +377,35 @@ class PPOAgent:
         # PPO 학습
         for _ in range(4):
 
-            probs, state_values = self.policy(states)
+            probs, state_values = (
+                self.policy(states)
+            )
 
-            state_values = state_values.squeeze(-1)
+            # [Batch,1] -> [Batch]
+            state_values = (
+                state_values.squeeze(-1)
+            )
 
             dist = Categorical(probs)
 
-            new_logprobs = dist.log_prob(actions)
+            new_logprobs = (
+                dist.log_prob(actions)
+            )
 
             entropy = dist.entropy()
 
+            # PPO Ratio
             ratios = torch.exp(
                 new_logprobs - logprobs
             )
 
+            # Advantage
             advantages = (
                 rewards
                 - state_values.detach()
             )
 
+            # PPO Objective
             surr1 = ratios * advantages
 
             surr2 = torch.clamp(
@@ -361,6 +414,7 @@ class PPOAgent:
                 1 + self.eps_clip
             ) * advantages
 
+            # Loss
             loss = (
                 -torch.min(surr1, surr2)
                 + 0.5 * self.MseLoss(
@@ -370,6 +424,7 @@ class PPOAgent:
                 - 0.01 * entropy
             )
 
+            # 역전파
             self.optimizer.zero_grad()
 
             loss.mean().backward()
@@ -393,6 +448,7 @@ class PPOAgent:
     # 모델 저장
     def save(self):
 
+        # models 폴더 생성
         os.makedirs(
             os.path.dirname(
                 self.weights_path
@@ -400,6 +456,7 @@ class PPOAgent:
             exist_ok=True
         )
 
+        # 모델 저장
         torch.save(
             self.policy.state_dict(),
             self.weights_path
