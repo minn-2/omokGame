@@ -147,14 +147,14 @@ class Play:
 
         # 인간 vs 인간 버튼
         btn1_rect = pygame.Rect(WIN_W//2 - 130, 250, 260, 55)
-        pygame.draw.rect(self.screen, BLACK_COLOR, btn1_rect, border_radius=8)
-        t1 = self.font_medium.render('인간  vs  인간', True, BG_COLOR)
+        pygame.draw.rect(self.screen, BLACK_COLOR, btn1_rect, border_radius=2)
+        t1 = self.font_medium.render('인간  vs  인간', True, WHITE_COLOR)
         self.screen.blit(t1, (WIN_W//2 - t1.get_width()//2, 265))
 
         # 인간 vs AI 버튼
         btn2_rect = pygame.Rect(WIN_W//2 - 130, 330, 260, 55)
-        pygame.draw.rect(self.screen, WHITE_COLOR, btn2_rect, border_radius=8)
-        pygame.draw.rect(self.screen, BLACK_COLOR, btn2_rect, border_radius=8, width=2)
+        pygame.draw.rect(self.screen, WHITE_COLOR, btn2_rect, border_radius=2)
+        pygame.draw.rect(self.screen, BLACK_COLOR, btn2_rect, border_radius=2, width=1)
         t2 = self.font_medium.render('인간  vs  AI', True, BLACK_COLOR)
         self.screen.blit(t2, (WIN_W//2 - t2.get_width()//2, 345))
 
@@ -214,14 +214,11 @@ class Play:
 
                     if self.engine.board.board[i][j] == 1:
                         # 흑돌
-                        pygame.draw.circle(
-                            self.screen, BLACK_COLOR,
-                            (cx, cy), 16)
+                        pygame.draw.circle(self.screen, BLACK_COLOR, (cx, cy), 16)
 
                     elif self.engine.board.board[i][j] == 2:
-                        # 백돌(원, 테두리)
+                        # 백돌
                         pygame.draw.circle(self.screen, WHITE_COLOR, (cx, cy), 16)
-                        pygame.draw.circle(self.screen, BLACK_COLOR, (cx, cy), 16, 2)
 
         # 마지막 착수 (빨간 점)
         if self.last_move:
@@ -275,7 +272,7 @@ class Play:
 
         # 처음으로 버튼
         btn_rect = pygame.Rect(CANVAS_SIZE + 20, WIN_H - 70, 180, 45)
-        pygame.draw.rect(self.screen, BG_COLOR, btn_rect, border_radius=8)
+        pygame.draw.rect(self.screen, BG_COLOR, btn_rect, border_radius=2)
         btn_text = self.font_small.render('처음으로', True, BLACK_COLOR)
         self.screen.blit(btn_text, (CANVAS_SIZE + PANEL_W//2 - btn_text.get_width()//2, WIN_H - 55))
 
@@ -292,10 +289,10 @@ class Play:
         box_y = WIN_H//2 - box_h//2
 
         # 팝업 배경
-        pygame.draw.rect(self.screen, BG_COLOR, (box_x, box_y, box_w, box_h), border_radius=16)
+        pygame.draw.rect(self.screen, BG_COLOR, (box_x, box_y, box_w, box_h), border_radius=2)
         
         # 팝업 테두리 
-        pygame.draw.rect(self.screen, BLACK_COLOR, (box_x, box_y, box_w, box_h), border_radius=16, width=2)
+        pygame.draw.rect(self.screen, BLACK_COLOR, (box_x, box_y, box_w, box_h), border_radius=2, width=1)
 
         # 제목
         title = self.font_small.render('게임종료!', True, GRAY_COLOR)
@@ -307,7 +304,7 @@ class Play:
 
         # 확인 버튼
         btn_rect = pygame.Rect(WIN_W//2 - 80, box_y + 105, 160, 40)
-        pygame.draw.rect(self.screen, BLACK_COLOR, btn_rect, border_radius=8)
+        pygame.draw.rect(self.screen, BLACK_COLOR, btn_rect)
         btn_text = self.font_small.render('확 인', True, BG_COLOR)
         self.screen.blit(btn_text, (WIN_W//2 - btn_text.get_width()//2, box_y + 117))
 
