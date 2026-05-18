@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import copy
 
 from ai.engine import Engine
 from ai.agent import PPOAgent
@@ -7,8 +8,10 @@ from ai.agent import PPOAgent
 
 # 설정
 BOARD_SIZE = 15
-NUM_EPISODES = 1000
-PLAYER = 2
+NUM_EPISODES = 10000
+
+PLAYER_1 = 1
+PLAYER_2 = 2
 
 
 def train():
@@ -16,10 +19,22 @@ def train():
     # 엔진 생성
     engine = Engine(BOARD_SIZE)
 
-    # PPO 에이전트 생성
+    # 학습 AI
     agent = PPOAgent(
         BOARD_SIZE,
-        player=PLAYER
+        player=PLAYER_1
+    )
+
+    # 상대 AI (초기에는 자기 자신 복사)
+    opponent_agent = PPOAgent(
+        BOARD_SIZE,
+        player=PLAYER_2
+    )
+
+    opponent_agent.policy.load_state_dict(
+        copy.deepcopy(
+            agent.policy.state_dict()
+        )
     )
 
     wins = 0
@@ -28,24 +43,18 @@ def train():
 
     best_win_rate = 0.0
 
-    print('PPO 학습 시작')
-
-    print(
-        'Device:',
-        agent.device
-    )
-
+    print('Self-Play PPO 학습 시작')
+    print('Device:', agent.device)
     print('-' * 50)
 
-    # 학습 루프
     for episode in range(NUM_EPISODES):
 
         engine.reset()
 
         while not engine.is_over:
 
-            # PPO AI 차례
-            if engine.current_player == PLAYER:
+            # 학습 AI 차례
+            if engine.current_player == PLAYER_1:
 
                 move = agent.decide_next_move(
                     engine
@@ -61,38 +70,34 @@ def train():
                 if not success:
                     break
 
-                # 보상 계산
-                reward = (
-                    agent.calculate_reward(
-                        engine
-                    )
+                reward = agent.calculate_reward(
+                    engine
                 )
 
-                # 보상 저장
                 agent.store_reward(reward)
 
-            # 랜덤 상대
+            # 상대 AI 차례
             else:
 
-                valid_moves = (
-                    engine.get_valid_moves()
+                move = opponent_agent.decide_next_move(
+                    engine
                 )
 
-                if len(valid_moves) == 0:
+                if move is None:
                     break
 
-                idx = np.random.randint(
-                    len(valid_moves)
-                )
-
-                move = valid_moves[idx]
-
-                engine.make_move(
+                success = engine.make_move(
                     *move
                 )
 
+                if not success:
+                    # 실패 패널티 저장
+                    agent.store_reward(-10.0)
+
+                    break
+
         # 결과 기록
-        if engine.winner == PLAYER:
+        if engine.winner == PLAYER_1:
 
             wins += 1
 
@@ -107,7 +112,7 @@ def train():
         # PPO 업데이트
         agent.update()
 
-        # 출력 및 저장
+        # 출력
         if (episode + 1) % 100 == 0:
 
             total = episode + 1
@@ -117,13 +122,11 @@ def train():
             ) * 100
 
             print(
-
                 'Episode {}/{} | '
                 '승 {} | '
                 '패 {} | '
                 '무 {} | '
                 '승률 {:.1f}%'
-
                 .format(
                     total,
                     NUM_EPISODES,
@@ -145,6 +148,21 @@ def train():
 
                 agent.save()
 
+                # 상대 모델 갱신
+                opponent_agent.policy.load_state_dict(
+                    copy.deepcopy(
+                        agent.policy.state_dict()
+                    )
+                )
+
+                opponent_agent.policy_old.load_state_dict(
+                    opponent_agent.policy.state_dict()
+                )
+
+                print(
+                    'Self-Play 상대 모델 갱신 완료'
+                )
+
     print('-' * 50)
 
     print('학습 완료')
@@ -156,15 +174,10 @@ def train():
         )
     )
 
-    # 최종 저장
     agent.save()
 
 
-# 실행
 if __name__ == '__main__':
-
     np.random.seed(42)
-
     torch.manual_seed(42)
-
     train()
