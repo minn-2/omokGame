@@ -1,170 +1,103 @@
-import numpy as np
 import torch
-
-from ai.engine import Engine
-from ai.agent import PPOAgent
-
-
-# 설정
-BOARD_SIZE = 15
-NUM_EPISODES = 1000
-PLAYER = 2
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-def train():
+class PPOModel(nn.Module):
 
-    # 엔진 생성
-    engine = Engine(BOARD_SIZE)
+    def __init__(self, board_size=15):
 
-    # PPO 에이전트 생성
-    agent = PPOAgent(
-        BOARD_SIZE,
-        player=PLAYER
-    )
+        super(PPOModel, self).__init__()
 
-    wins = 0
-    losses = 0
-    draws = 0
+        self.board_size = board_size
 
-    best_win_rate = 0.0
+        # CNN 특징 추출
+        self.conv_block = nn.Sequential(
 
-    print('PPO 학습 시작')
+            nn.Conv2d(
+                in_channels=1,
+                out_channels=64,
+                kernel_size=3,
+                padding=1
+            ),
 
-    print(
-        'Device:',
-        agent.device
-    )
+            nn.ReLU(),
 
-    print('-' * 50)
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=128,
+                kernel_size=3,
+                padding=1
+            ),
 
-    # 학습 루프
-    for episode in range(NUM_EPISODES):
+            nn.ReLU(),
 
-        engine.reset()
+            nn.Conv2d(
+                in_channels=128,
+                out_channels=128,
+                kernel_size=3,
+                padding=1
+            ),
 
-        while not engine.is_over:
-
-            # PPO AI 차례
-            if engine.current_player == PLAYER:
-
-                move = agent.decide_next_move(
-                    engine
-                )
-
-                if move is None:
-                    break
-
-                success = engine.make_move(
-                    *move
-                )
-
-                if not success:
-                    break
-
-                # 보상 계산
-                reward = (
-                    agent.calculate_reward(
-                        engine
-                    )
-                )
-
-                # 보상 저장
-                agent.store_reward(reward)
-
-            # 랜덤 상대
-            else:
-
-                valid_moves = (
-                    engine.get_valid_moves()
-                )
-
-                if len(valid_moves) == 0:
-                    break
-
-                idx = np.random.randint(
-                    len(valid_moves)
-                )
-
-                move = valid_moves[idx]
-
-                engine.make_move(
-                    *move
-                )
-
-        # 결과 기록
-        if engine.winner == PLAYER:
-
-            wins += 1
-
-        elif engine.winner == 0:
-
-            draws += 1
-
-        else:
-
-            losses += 1
-
-        # PPO 업데이트
-        agent.update()
-
-        # 출력 및 저장
-        if (episode + 1) % 100 == 0:
-
-            total = episode + 1
-
-            win_rate = (
-                wins / total
-            ) * 100
-
-            print(
-
-                'Episode {}/{} | '
-                '승 {} | '
-                '패 {} | '
-                '무 {} | '
-                '승률 {:.1f}%'
-
-                .format(
-                    total,
-                    NUM_EPISODES,
-                    wins,
-                    losses,
-                    draws,
-                    win_rate
-                )
-            )
-
-            # 최고 승률 갱신 시 저장
-            if win_rate > best_win_rate:
-
-                best_win_rate = win_rate
-
-                print(
-                    '최고 승률 갱신 → 모델 저장'
-                )
-
-                agent.save()
-
-    print('-' * 50)
-
-    print('학습 완료')
-
-    print(
-        '최종 승률: {:.1f}%'
-        .format(
-            (wins / NUM_EPISODES) * 100
+            nn.ReLU()
         )
-    )
 
-    # 최종 저장
-    agent.save()
+        # Flatten 크기
+        self.flatten_size = (
+            128
+            * board_size
+            * board_size
+        )
 
+        # Actor
+        self.actor = nn.Sequential(
 
-# 실행
-if __name__ == '__main__':
+            nn.Linear(
+                self.flatten_size,
+                256
+            ),
 
-    np.random.seed(42)
+            nn.ReLU(),
 
-    torch.manual_seed(42)
+            nn.Linear(
+                256,
+                board_size * board_size
+            )
+        )
 
-    train()
+        # Critic
+        self.critic = nn.Sequential(
+
+            nn.Linear(
+                self.flatten_size,
+                256
+            ),
+
+            nn.ReLU(),
+
+            nn.Linear(
+                256,
+                1
+            )
+        )
+
+    def forward(self, x):
+
+        # CNN 통과
+        x = self.conv_block(x)
+
+        # Flatten
+        x = torch.flatten(x, 1)
+
+        # Actor
+        logits = self.actor(x)
+
+        probs = F.softmax(
+            logits,
+            dim=-1
+        )
+
+        # Critic
+        value = self.critic(x)
+
+        return probs, value
