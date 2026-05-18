@@ -29,6 +29,16 @@ class Engine:
             self.board.get_valid_moves()
         )
 
+    # 강화학습용 step
+    def step(self, row, col):
+
+        success = self.make_move(
+            row,
+            col
+        )
+
+        return success
+
     # 착수
     def make_move(self, row, col):
 
@@ -39,12 +49,25 @@ class Engine:
             or col < 0
             or col >= self.board_size
         ):
+
             return False
 
+        # 돌 놓기
         success = self.board.make_move(
             row,
             col
         )
+
+        # 착수 성공 시 승리 판정
+        if success:
+
+            if self.check_win(row, col):
+
+                self.board.is_over = True
+
+                self.board.winner = (
+                    self.board.board[row][col]
+                )
 
         return success
 
@@ -66,19 +89,25 @@ class Engine:
             length
         )
 
-    # 현재 플레이어 반환
+    # 현재 플레이어
     @property
     def current_player(self):
 
         return self.board.current_player
 
-    # 게임 종료 여부 반환
+    # agent.py 호환용
+    @property
+    def turn(self):
+
+        return self.board.current_player
+
+    # 게임 종료 여부
     @property
     def is_over(self):
 
         return self.board.is_over
-    
-     # 승자 반환
+
+    # 승자 반환
     @property
     def winner(self):
 
