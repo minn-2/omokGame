@@ -12,15 +12,16 @@ PLAYER = 2
 
 
 def train():
-    # 엔진 / PPO 에이전트 생성
+
+    # 엔진 생성
     engine = Engine(BOARD_SIZE)
 
+    # PPO 에이전트 생성
     agent = PPOAgent(
         BOARD_SIZE,
         player=PLAYER
     )
 
-    # 통계 변수
     wins = 0
     losses = 0
     draws = 0
@@ -39,7 +40,6 @@ def train():
     # 학습 루프
     for episode in range(NUM_EPISODES):
 
-        # 게임 초기화
         engine.reset()
 
         while not engine.is_over:
@@ -51,16 +51,13 @@ def train():
                     engine
                 )
 
-                # 둘 곳 없으면 종료
                 if move is None:
                     break
 
-                # 착수
                 success = engine.make_move(
                     *move
                 )
 
-                # 실패 시 종료
                 if not success:
                     break
 
@@ -74,18 +71,16 @@ def train():
                 # 보상 저장
                 agent.store_reward(reward)
 
-            # 랜덤 상대 차례
+            # 랜덤 상대
             else:
 
                 valid_moves = (
                     engine.get_valid_moves()
                 )
 
-                # 가능한 수 없으면 종료
                 if len(valid_moves) == 0:
                     break
 
-                # 랜덤 위치 선택
                 idx = np.random.randint(
                     len(valid_moves)
                 )
@@ -122,13 +117,21 @@ def train():
             ) * 100
 
             print(
+
                 'Episode {}/{} | '
                 '승 {} | '
                 '패 {} | '
                 '무 {} | '
                 '승률 {:.1f}%'
 
-                .format(total, NUM_EPISODES, wins, losses, draws, win_rate)
+                .format(
+                    total,
+                    NUM_EPISODES,
+                    wins,
+                    losses,
+                    draws,
+                    win_rate
+                )
             )
 
             # 최고 승률 갱신 시 저장
@@ -142,7 +145,6 @@ def train():
 
                 agent.save()
 
-    # 학습 종료
     print('-' * 50)
 
     print('학습 완료')
@@ -161,9 +163,8 @@ def train():
 # 실행
 if __name__ == '__main__':
 
-    # 랜덤 시드 고정
     np.random.seed(42)
-    
+
     torch.manual_seed(42)
 
     train()
