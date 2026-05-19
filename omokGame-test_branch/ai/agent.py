@@ -31,10 +31,10 @@ class PPOAgent:
             self,
             board_size=15,
             player=2,
-            lr=3e-4,
+            lr=1e-4,
             gamma=0.99,
-            eps_clip=0.2,
-            in_channels=1):         
+            eps_clip=0.1,
+            in_channels=3):         
         self.device = torch.device(
             'cuda'
             if torch.cuda.is_available()
@@ -208,36 +208,39 @@ class PPOAgent:
         self.memory.rewards.append(reward)
 
     # 보상 계산
+    # agent.py calculate_reward() 수정
     def calculate_reward(self, engine):
 
         if engine.is_over:
-
             if engine.winner == self.player:
-                return 50.0
-
+                return 100.0   # 승리 보상 상향
             elif engine.winner == 0:
-                return 5.0
-
+                return -10.0   # 무승부는 패배에 가깝게
             else:
-                return -50.0
+                return -100.0  # 패배 패널티 상향
 
         reward = 0.0
-
         opponent = 3 - self.player
 
+        num_my_5 = engine.check_patterns(self.player, 5)
         num_my_4 = engine.check_patterns(self.player, 4)
         num_my_3 = engine.check_patterns(self.player, 3)
 
+        num_op_5 = engine.check_patterns(opponent, 5)
         num_op_4 = engine.check_patterns(opponent, 4)
         num_op_3 = engine.check_patterns(opponent, 3)
 
-        reward += num_my_4 * 2.0
-        reward += num_my_3 * 0.8
+        # 공격 보상
+        reward += num_my_5 * 50.0  # 5목 직전
+        reward += num_my_4 * 5.0
+        reward += num_my_3 * 1.5
 
-        reward -= num_op_4 * 4.0
-        reward -= num_op_3 * 1.5
+        # 수비 패널티 (공격보다 수비를 더 중요하게)
+        reward -= num_op_5 * 60.0  # 상대 5목 직전은 반드시 막아야
+        reward -= num_op_4 * 8.0
+        reward -= num_op_3 * 2.0
 
-        return max(min(reward, 20.0), -20.0)
+        return max(min(reward, 50.0), -50.0)
 
     # PPO 업데이트
     def update(self):

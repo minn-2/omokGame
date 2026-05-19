@@ -7,9 +7,8 @@ from ai.agent import PPOAgent
 
 
 BOARD_SIZE = 15
-NUM_EPISODES = 200000
+NUM_EPISODES = 500000
 LOG_INTERVAL = 100
-OPPONENT_UPDATE_INTERVAL = 500
 
 PLAYER_1 = 1
 PLAYER_2 = 2
@@ -22,13 +21,13 @@ def train():
     agent = PPOAgent(
         BOARD_SIZE,
         player=PLAYER_1,
-        in_channels=1          
+        in_channels=3
     )
 
     opponent_agent = PPOAgent(
         BOARD_SIZE,
         player=PLAYER_2,
-        in_channels=1         
+        in_channels=3
     )
 
     opponent_agent.policy.load_state_dict(
@@ -55,7 +54,7 @@ def train():
     for episode in range(NUM_EPISODES):
 
         engine.reset()
-        abnormal_end = False   
+        abnormal_end = False
 
         while not engine.is_over:
 
@@ -74,16 +73,14 @@ def train():
                     abnormal_end = True
                     break
 
-                # calculate_reward가 종료 보상도 포함하므로 그대로 사용
                 reward = agent.calculate_reward(engine)
                 agent.store_reward(reward)
 
             else:
 
-                # 상대는 학습하지 않으므로 메모리 저장 없이 행동만 선택
                 move = opponent_agent.decide_next_move(engine)
 
-                # 상대 메모리는 매 턴 즉시 비움 (메모리 낭비 방지)
+                # 상대 메모리는 학습 불필요하므로 즉시 비움
                 opponent_agent.memory.clear()
 
                 if move is None:
@@ -97,25 +94,22 @@ def train():
                     abnormal_end = True
                     break
 
-        # 정상 종료 시에만 결과 집계
+        # 결과 집계
         if not abnormal_end:
 
-            # alculate_reward가 이미 종료 보상을 저장했으므로
-            # 중복 저장 없이 집계만 수행
             if engine.winner == PLAYER_1:
-                total_wins   += 1
+                total_wins    += 1
                 interval_wins += 1
 
             elif engine.winner == 0:
-                total_draws   += 1
+                total_draws    += 1
                 interval_draws += 1
 
             else:
-                total_losses   += 1
+                total_losses    += 1
                 interval_losses += 1
 
         else:
-            # 비정상 종료는 패배로 집계
             total_losses    += 1
             interval_losses += 1
 
@@ -152,6 +146,7 @@ def train():
                 )
             )
 
+            # 최고 승률 갱신 시 저장
             if win_rate > best_win_rate:
                 best_win_rate = win_rate
                 print(
@@ -160,24 +155,23 @@ def train():
                 )
                 agent.save()
 
+            # 구간 승률 55% 이상 시 상대 모델 갱신
+            if win_rate > 55.0:
+                opponent_agent.policy.load_state_dict(
+                    copy.deepcopy(agent.policy.state_dict())
+                )
+                opponent_agent.policy_old.load_state_dict(
+                    opponent_agent.policy.state_dict()
+                )
+                print(
+                    '상대 모델 갱신 (구간 승률 {:.1f}%)'
+                    .format(win_rate)
+                )
+
+            # 구간 카운터 리셋
             interval_wins   = 0
             interval_losses = 0
             interval_draws  = 0
-
-        # 주기적 상대 모델 갱신
-        if (episode + 1) % OPPONENT_UPDATE_INTERVAL == 0:
-
-            opponent_agent.policy.load_state_dict(
-                copy.deepcopy(agent.policy.state_dict())
-            )
-            opponent_agent.policy_old.load_state_dict(
-                opponent_agent.policy.state_dict()
-            )
-
-            print(
-                'Self-Play 상대 모델 갱신 완료 (Episode {})'
-                .format(episode + 1)
-            )
 
     print('-' * 50)
     print('학습 완료')

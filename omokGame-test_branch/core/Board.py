@@ -18,12 +18,16 @@ class Board:
 
     # [데이터 변환] 인공지능(AI) 모델의 입력값으로 쓰기 위한 변환
     def get_state(self):
-        # 딥러닝 모델이 처리하기 쉬운 (C, H, W) 형태의 3차원 배열로 변환
-        return (
-            self.board.copy()
-            .reshape(1, self.board_size, self.board_size)
-            .astype(np.float32) # 연산 효율을 위해 실수형(float32)으로 캐스팅
-        )
+    # 채널 1: 내 돌 위치
+    # 채널 2: 상대 돌 위치  
+    # 채널 3: 현재 플레이어 (전체가 1 또는 0)
+        player = self.current_player
+        opponent = 3 - player
+        
+        ch1 = (self.board == player).astype(np.float32)
+        ch2 = (self.board == opponent).astype(np.float32)
+        ch3 = np.ones_like(ch1) if player == 1 else np.zeros_like(ch1)
+        return np.stack([ch1, ch2, ch3], axis=0) 
 
     # [착수 위치 계산] 현재 보드에서 돌을 놓을 수 있는 빈 공간 탐색
     def get_valid_moves(self):

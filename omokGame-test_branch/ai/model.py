@@ -23,16 +23,14 @@ class ResidualBlock(nn.Module):
     def forward(self, x):
         return self.relu(x + self.block(x))
 
-
 class PPOModel(nn.Module):
 
-    def __init__(self, board_size=15, in_channels=1):
+    def __init__(self, board_size=15, in_channels=3):
 
         super().__init__()
 
         self.board_size = board_size
-
-        NUM_FILTERS = 128
+        NUM_FILTERS = 256  # 128 → 256으로 증가
 
         self.input_conv = nn.Sequential(
             nn.Conv2d(in_channels, NUM_FILTERS, kernel_size=3, padding=1, bias=False),
@@ -40,7 +38,10 @@ class PPOModel(nn.Module):
             nn.ReLU(inplace=True),
         )
 
+        # ResidualBlock 6개로 증가
         self.res_blocks = nn.Sequential(
+            ResidualBlock(NUM_FILTERS),
+            ResidualBlock(NUM_FILTERS),
             ResidualBlock(NUM_FILTERS),
             ResidualBlock(NUM_FILTERS),
             ResidualBlock(NUM_FILTERS),
@@ -50,13 +51,17 @@ class PPOModel(nn.Module):
         self.flatten_size = NUM_FILTERS * board_size * board_size
 
         self.actor = nn.Sequential(
-            nn.Linear(self.flatten_size, 256),
+            nn.Linear(self.flatten_size, 512),  # 256 → 512
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 256),                # 레이어 추가
             nn.ReLU(inplace=True),
             nn.Linear(256, board_size * board_size),
         )
 
         self.critic = nn.Sequential(
-            nn.Linear(self.flatten_size, 256),
+            nn.Linear(self.flatten_size, 512),  # 256 → 512
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 256),                # 레이어 추가
             nn.ReLU(inplace=True),
             nn.Linear(256, 1),
         )
