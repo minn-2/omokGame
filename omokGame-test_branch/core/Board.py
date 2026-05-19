@@ -42,8 +42,8 @@ class Board:
         # 3. 흑돌 전용 금수 검사: 흑돌(1)일 경우 착수 전 금수 자리인지 확인
         if self.current_player==1:
            if Rules.is_forbidden(
-                self.board, row, col, self.current_player): 
-            return False # 금수 자리라면 착수하지 않고 False 반환
+                    self.board, row, col, self.current_player): 
+                return False # 금수 자리라면 착수하지 않고 False 반환
 
         # 4. 돌 놓기: 검증이 끝난 위치에 현재 플레이어의 돌을 배치
         self.board[row, col] = self.current_player
