@@ -1,366 +1,245 @@
+import os
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import os
-
+import torch.nn.functional as F
 from torch.distributions import Categorical
+
+from core.Rules import Rules
 from ai.model import PPOModel
 
-
+# 경험 버퍼
 class Memory:
-    """경험 저장 버퍼"""
-
     def __init__(self):
-
-        self.states = []
-        self.actions = []
-        self.logprobs = []
-        self.rewards = []
+        self.states   : list = []
+        self.actions  : list = []
+        self.logprobs : list = []
+        self.values   : list = []
+        self.rewards  : list = []
+        self.dones    : list = []
 
     def clear(self):
+        for lst in (self.states, self.actions, self.logprobs,
+                    self.values, self.rewards, self.dones):
+            lst.clear()
 
-        self.states.clear()
-        self.actions.clear()
-        self.logprobs.clear()
-        self.rewards.clear()
+    def __len__(self):
+        return len(self.rewards)
 
 
+# PPO 에이전트
 class PPOAgent:
+    # 하이퍼파라미터
+    LR         = 3e-4
+    GAMMA      = 0.99
+    GAE_LAMBDA = 0.95
+    CLIP_EPS   = 0.2
+    ENTROPY_C  = 0.01
+    VALUE_C    = 0.5
+    EPOCHS     = 4
+    BATCH_SIZE = 256
 
-    def __init__(
-            self,
-            board_size=15,
-            player=2,
-            lr=1e-4,
-            gamma=0.99,
-            eps_clip=0.1,
-            in_channels=3):         
-        self.device = torch.device(
-            'cuda'
-            if torch.cuda.is_available()
-            else 'cpu'
-        )
-
+    def __init__(self, board_size: int = 15, player: int = 2):
         self.board_size = board_size
-        self.player = player
-        self.gamma = gamma
-        self.eps_clip = eps_clip
-        self.in_channels = in_channels
+        self.player     = player          # 외부에서 동적으로 바꿀 수 있음
+        self.device     = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu')
 
-        BASE_DIR = os.path.dirname(
-            os.path.dirname(
-                os.path.abspath(__file__)
-            )
-        )
+        # 학습 중인 정책
+        self.net      = PPOModel(board_size).to(self.device)
+        # 행동 선택 전용 (업데이트 후 복사)
+        self.old_net  = PPOModel(board_size).to(self.device)
+        self.old_net.load_state_dict(self.net.state_dict())
+        self.old_net.eval()
 
-        self.weights_path = os.path.join(
-            BASE_DIR,
-            'models',
-            'ppo_p{}.pt'.format(player)
-        )
+        self.optimizer = torch.optim.Adam(
+            self.net.parameters(), lr=self.LR)
 
-        # in_channels 전달
-        self.policy = PPOModel(
-            board_size,
-            in_channels=in_channels
-        ).to(self.device)
-
-        self.optimizer = optim.Adam(
-            self.policy.parameters(),
-            lr=lr
-        )
-
-        # in_channels 전달
-        self.policy_old = PPOModel(
-            board_size,
-            in_channels=in_channels
-        ).to(self.device)
-
-        self.policy_old.load_state_dict(
-            self.policy.state_dict()
-        )
-
-        self.MseLoss = nn.MSELoss()
-
-        self.memory = Memory()
-
-        if os.path.isfile(self.weights_path):
-
-            print(
-                '모델 불러오기:',
-                self.weights_path
-            )
-
-            self.policy.load_state_dict(
-                torch.load(
-                    self.weights_path,
-                    map_location=self.device,
-                    weights_only=True       # 보안 경고 제거
-                )
-            )
-
-            self.policy_old.load_state_dict(
-                self.policy.state_dict()
-            )
-
-        else:
-
-            print('새 모델 생성')
+        # 흑/백 각각 별도 메모리 (한 에피소드에 두 플레이어가 모두 기록)
+        self.memory    = Memory()
+        self.last_loss : float | None = None
 
     # 행동 선택
-    def select_action(
-            self,
-            state,
-            valid_moves):
-
-        state = torch.tensor(
-            state,
-            dtype=torch.float32
-        ).to(self.device)
-
-        # (C,H,W) -> (1,C,H,W) 배치 차원 추가
-        if state.dim() == 3:
-            state = state.unsqueeze(0)
+    def decide_next_move(self, engine):
+        state   = engine.get_state()          # (3, H, W)
+        state_t = torch.tensor(
+            state, dtype=torch.float32
+        ).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            probs, _ = self.policy_old(state)
+            probs, value = self.old_net(state_t)
 
-        mask = torch.zeros(
-            self.board_size * self.board_size
-        ).to(self.device)
+        probs = probs.squeeze(0)              # (N,)
+        value = value.item()
 
-        for move in valid_moves:
+        # 유효 칸 마스킹
+        board_np  = engine.board.board
+        cur       = engine.current_player
+        mask_flat = self._build_mask(board_np, cur)   # bool (N,)
 
-            idx = int(
-                move[0] * self.board_size
-                + move[1]
-            )
-
-            mask[idx] = 1
-
-        masked_probs = probs.squeeze(0) * mask  # squeeze(0)으로 배치만 제거
-
-        sum_probs = masked_probs.sum()
-
-        if sum_probs > 0:
-            masked_probs = masked_probs / sum_probs
-        else:
-            masked_probs = mask / (mask.sum() + 1e-8)
-
-        dist = Categorical(masked_probs)
-
-        action = dist.sample()
-
-        return (
-            action.item(),
-            dist.log_prob(action)
-        )
-
-    # 다음 수 결정
-    def decide_next_move(
-            self,
-            engine):
-
-        state = engine.get_state()
-
-        valid_moves = engine.get_valid_moves()
-
-        if len(valid_moves) == 0:
+        if not mask_flat.any():
             return None
 
-        action, log_prob = self.select_action(
-            state,
-            valid_moves
-        )
+        # 마스킹 후 재정규화
+        probs = probs * mask_flat.float()
+        s     = probs.sum()
+        probs = probs / s if s > 0 \
+            else mask_flat.float() / mask_flat.float().sum()
 
-        state_tensor = torch.tensor(
-            state,
-            dtype=torch.float32
-        ).to(self.device)
+        dist   = Categorical(probs)
+        action = dist.sample()
 
-        # (C,H,W) 형태로 메모리에 저장
-        # get_state()가 (C,H,W)를 반환하면 그대로,
-        # (1,C,H,W)를 반환하면 배치 차원 제거
-        if state_tensor.dim() == 4:
-            state_tensor = state_tensor.squeeze(0)
+        # 메모리에 저장
+        self.memory.states.append(state)
+        self.memory.actions.append(action.item())
+        self.memory.logprobs.append(dist.log_prob(action).item())
+        self.memory.values.append(value)
 
-        self.memory.states.append(state_tensor)
+        row, col = divmod(action.item(), self.board_size)
+        return (row, col)
 
-        self.memory.actions.append(
-            torch.tensor(
-                action,
-                dtype=torch.long
-            ).to(self.device)
-        )
-
-        self.memory.logprobs.append(
-            log_prob.detach()
-        )
-
-        row = action // self.board_size
-        col = action % self.board_size
-
-        return row, col
-
-    # 보상 저장
-    def store_reward(self, reward):
-
-        self.memory.rewards.append(reward)
+    def _build_mask(self, board_np: np.ndarray,
+                    player: int) -> torch.Tensor:
+        mask = (board_np == 0).flatten()
+        if player == 1:          # 흑돌 금수 마스킹
+            for idx in range(len(mask)):
+                if mask[idx]:
+                    r, c = divmod(idx, self.board_size)
+                    if Rules.is_forbidden(board_np, r, c, 1):
+                        mask[idx] = False
+        return torch.tensor(mask, dtype=torch.bool, device=self.device)
 
     # 보상 계산
-    # agent.py calculate_reward() 수정
-    def calculate_reward(self, engine):
+    def calculate_reward(self, engine) -> float:
+        return self._reward_for(engine, self.player)
+
+    @staticmethod
+    def _reward_for(engine, player: int) -> float:
+        board = engine.board.board
+        opp   = 3 - player
 
         if engine.is_over:
-            if engine.winner == self.player:
-                return 100.0   # 승리 보상 상향
-            elif engine.winner == 0:
-                return -10.0   # 무승부는 패배에 가깝게
-            else:
-                return -100.0  # 패배 패널티 상향
+            if engine.winner == player : return  50.0
+            if engine.winner == opp    : return -50.0
+            return 0.0
 
-        reward = 0.0
-        opponent = 3 - self.player
+        r = 0.0
+        if Rules.check_patterns(board, player, 4): r += 8.0
+        if Rules.check_patterns(board, opp,    4): r -= 15.0
+        if Rules.check_patterns(board, player, 3): r += 3.0
+        if Rules.check_patterns(board, opp,    3): r -= 5.0
+        return float(r)
 
-        num_my_5 = engine.check_patterns(self.player, 5)
-        num_my_4 = engine.check_patterns(self.player, 4)
-        num_my_3 = engine.check_patterns(self.player, 3)
-
-        num_op_5 = engine.check_patterns(opponent, 5)
-        num_op_4 = engine.check_patterns(opponent, 4)
-        num_op_3 = engine.check_patterns(opponent, 3)
-
-        # 공격 보상
-        reward += num_my_5 * 50.0  # 5목 직전
-        reward += num_my_4 * 5.0
-        reward += num_my_3 * 1.5
-
-        # 수비 패널티 (공격보다 수비를 더 중요하게)
-        reward -= num_op_5 * 60.0  # 상대 5목 직전은 반드시 막아야
-        reward -= num_op_4 * 8.0
-        reward -= num_op_3 * 2.0
-
-        return max(min(reward, 50.0), -50.0)
-
-    # PPO 업데이트
-    def update(self):
-
-        if len(self.memory.rewards) == 0:
-            return
-
-        # 할인 누적 보상 계산
-        discounted_rewards = []
-        discounted_reward = 0
-
-        for reward in reversed(self.memory.rewards):
-
-            discounted_reward = (
-                reward + self.gamma * discounted_reward
-            )
-
-            discounted_rewards.insert(0, discounted_reward)
-
-        # 데이터 길이 동기화
-        min_size = min(
-            len(self.memory.states),
-            len(self.memory.actions),
-            len(self.memory.logprobs),
-            len(discounted_rewards)
-        )
-
-        # 경험이 없으면 업데이트 스킵
-        if min_size == 0:
+    def store_reward(self, reward: float, done: bool = False):
+        self.memory.rewards.append(reward)
+        self.memory.dones.append(done)
+        if done:
+            self.last_loss = self._train()
             self.memory.clear()
+
+    # PPO 학습
+    def _train(self) -> float | None:
+        T = min(len(self.memory.states), len(self.memory.rewards))
+        if T == 0:
+            return None
+
+        states   = torch.tensor(
+            np.array(self.memory.states[:T]),
+            dtype=torch.float32, device=self.device)
+        actions  = torch.tensor(
+            self.memory.actions[:T],
+            dtype=torch.long, device=self.device)
+        old_lps  = torch.tensor(
+            self.memory.logprobs[:T],
+            dtype=torch.float32, device=self.device)
+        old_vals = torch.tensor(
+            self.memory.values[:T],
+            dtype=torch.float32, device=self.device)
+        rewards  = self.memory.rewards[:T]
+        dones    = self.memory.dones[:T]
+
+        advantages = self._gae(rewards, dones, old_vals)
+        returns    = (advantages + old_vals).detach()
+        advantages = (advantages - advantages.mean()) / (
+            advantages.std() + 1e-8)
+
+        total_loss, count = 0.0, 0
+        for _ in range(self.EPOCHS):
+            idx = torch.randperm(T, device=self.device)
+            for start in range(0, T, self.BATCH_SIZE):
+                mb   = idx[start: start + self.BATCH_SIZE]
+                loss = self._ppo_loss(
+                    states[mb], actions[mb],
+                    old_lps[mb], advantages[mb], returns[mb])
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(
+                    self.net.parameters(), max_norm=0.5)
+                self.optimizer.step()
+                total_loss += loss.item()
+                count      += 1
+
+        self.old_net.load_state_dict(self.net.state_dict())
+        return total_loss / max(count, 1)
+
+    def _gae(self, rewards, dones, values) -> torch.Tensor:
+        T    = len(rewards)
+        advs = torch.zeros(T, device=self.device)
+        gae  = 0.0
+        for t in reversed(range(T)):
+            nv    = values[t+1].item() if t+1 < T else 0.0
+            delta = (rewards[t]
+                     + self.GAMMA * nv * (1 - int(dones[t]))
+                     - values[t].item())
+            gae   = (delta
+                     + self.GAMMA * self.GAE_LAMBDA
+                     * (1 - int(dones[t])) * gae)
+            advs[t] = gae
+        return advs
+
+    def _ppo_loss(self, states, actions, old_log_probs,
+                  advantages, returns) -> torch.Tensor:
+        probs, values = self.net(states)
+        values        = values.squeeze(-1)
+        dist          = Categorical(probs)
+        log_probs     = dist.log_prob(actions)
+        entropy       = dist.entropy().mean()
+
+        ratio      = (log_probs - old_log_probs).exp()
+        clip_ratio = ratio.clamp(1-self.CLIP_EPS, 1+self.CLIP_EPS)
+        policy_loss = -torch.min(
+            ratio * advantages, clip_ratio * advantages).mean()
+        value_loss  = F.mse_loss(values, returns)
+        return (policy_loss
+                + self.VALUE_C   * value_loss
+                - self.ENTROPY_C * entropy)
+
+    # 가중치 관리
+    def save(self, path: str = 'ppo_p2.pt'):
+        torch.save({
+            'net'      : self.net.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+        }, path)
+        print(f'[PPOAgent] 저장 → {path}')
+
+    def load(self, path: str = 'ppo_p2.pt'):
+        if not os.path.exists(path):
+            print(f'[PPOAgent] {path} 없음 — 랜덤 가중치로 시작')
             return
+        ckpt = torch.load(path, map_location=self.device)
+        self.net.load_state_dict(ckpt['net'])
+        self.old_net.load_state_dict(ckpt['net'])
+        self.optimizer.load_state_dict(ckpt['optimizer'])
+        print(f'[PPOAgent] 불러오기 ← {path}')
 
-        self.memory.states   = self.memory.states[:min_size]
-        self.memory.actions  = self.memory.actions[:min_size]
-        self.memory.logprobs = self.memory.logprobs[:min_size]
-        discounted_rewards   = discounted_rewards[:min_size]
+    def clone_weights(self) -> dict:
+        return {k: v.cpu().clone()
+                for k, v in self.net.state_dict().items()}
 
-        # Tensor 변환
-        # stack 결과: [Batch, C, H, W]
-        states = torch.stack(
-            self.memory.states
-        ).to(self.device).detach()
-
-        actions = torch.stack(
-            self.memory.actions
-        ).to(self.device).detach()
-
-        logprobs = torch.stack(
-            self.memory.logprobs
-        ).to(self.device).detach()
-
-        rewards = torch.tensor(
-            discounted_rewards,
-            dtype=torch.float32
-        ).to(self.device).detach()
-
-        # 보상 정규화
-        if len(rewards) > 1:
-            rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
-
-        # PPO 학습
-        for _ in range(4):
-
-            probs, state_values = self.policy(states)
-
-            state_values = state_values.squeeze(-1)  # [Batch,1] -> [Batch]
-
-            dist = Categorical(probs)
-
-            new_logprobs = dist.log_prob(actions)
-
-            entropy = dist.entropy()
-
-            ratios = torch.exp(new_logprobs - logprobs)
-
-            advantages = rewards - state_values.detach()
-
-            surr1 = ratios * advantages
-
-            surr2 = torch.clamp(
-                ratios,
-                1 - self.eps_clip,
-                1 + self.eps_clip
-            ) * advantages
-
-            loss = (
-                -torch.min(surr1, surr2)
-                + 0.5 * self.MseLoss(state_values, rewards)
-                - 0.01 * entropy
-            )
-
-            self.optimizer.zero_grad()
-
-            loss.mean().backward()
-
-            torch.nn.utils.clip_grad_norm_(
-                self.policy.parameters(),
-                0.5
-            )
-
-            self.optimizer.step()
-
-        # 이전 정책 갱신
-        self.policy_old.load_state_dict(
-            self.policy.state_dict()
-        )
-
-        self.memory.clear()
-
-    # 모델 저장
-    def save(self):
-
-        os.makedirs(
-            os.path.dirname(self.weights_path),
-            exist_ok=True
-        )
-
-        torch.save(
-            self.policy.state_dict(),
-            self.weights_path
-        )
-
-        print('모델 저장:', self.weights_path)
+    def make_champion_agent(self, weights: dict) -> 'PPOAgent':
+        champ = PPOAgent(self.board_size, player=2)
+        sd    = {k: v.to(self.device) for k, v in weights.items()}
+        champ.net.load_state_dict(sd)
+        champ.old_net.load_state_dict(sd)
+        champ.old_net.eval()
+        return champ
