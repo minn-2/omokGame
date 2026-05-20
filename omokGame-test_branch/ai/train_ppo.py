@@ -21,7 +21,7 @@ LOG_PATH = CKPT_DIR / 'train_log.json'
 
 # 학습 설정
 BOARD_SIZE       = 15
-TOTAL_EPISODES   = 500000
+TOTAL_EPISODES   = 1000000
 SAVE_EVERY       = 200
 EVAL_EVERY       = 500      # N 에피소드마다 champion 평가
 EVAL_GAMES       = 30       # 평가 대결 수
@@ -54,26 +54,28 @@ def ensure_dirs():
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def save_champion(agent: PPOAgent):
-    """현재 모델을 ppo_p2.pt 에 덮어씀 (champion 갱신)."""
+def save_champion(agent: PPOAgent, episode: int = 0):
     ensure_dirs()
     torch.save({
         'net'      : agent.net.state_dict(),
         'optimizer': agent.optimizer.state_dict(),
+        'episode'  : episode,   # ← 에피소드 번호 저장
     }, P2_PATH)
-    print(f'  [♛ CHAMPION] ppo_p2.pt 갱신!')
+    print(f'  [♛ CHAMPION] ppo_p2.pt 갱신! (ep {episode:,})')
 
 
-def load_champion(agent: PPOAgent):
-    """ppo_p2.pt 를 에이전트에 주입."""
+def load_champion(agent: PPOAgent) -> int:
     if P2_PATH.exists():
         ckpt = torch.load(P2_PATH, map_location=agent.device)
         agent.net.load_state_dict(ckpt['net'])
         agent.old_net.load_state_dict(ckpt['net'])
         agent.optimizer.load_state_dict(ckpt['optimizer'])
-        print(f'  [LOAD] champion ← {P2_PATH}')
+        ep = ckpt.get('episode', 0)   # ← 에피소드 번호 복원 (구버전 호환)
+        print(f'  [LOAD] champion ← {P2_PATH} (ep {ep:,})')
+        return ep
     else:
         print(f'  [SKIP] {P2_PATH} 없음 — 랜덤 가중치로 시작')
+        return 0
 
 
 def load_log() -> dict:
@@ -90,10 +92,10 @@ def load_log() -> dict:
         'episodes': [],
         'summary' : {
             'total_episodes'  : 0,
-            'challenger_wins' : 0,   # Challenger 가 이긴 횟수 (학습 중)
-            'champion_wins'   : 0,   # Champion 이 이긴 횟수
+            'challenger_wins' : 0,
+            'champion_wins'   : 0,
             'draws'           : 0,
-            'champion_updates': 0,   # ppo_p2.pt 갱신 횟수
+            'champion_updates': 0,
         },
     }
 
@@ -145,7 +147,7 @@ def import_zip(zip_path: str) -> bool:
     print(f'[IMPORT] 완료 ← {zp}')
     return True
 
-# 보상 
+# 보상
 def shaped_reward(engine: Engine, player: int) -> float:
     board = engine.board.board
     opp   = 3 - player
@@ -171,8 +173,6 @@ def evaluate(challenger: PPOAgent,
         env = Engine(BOARD_SIZE)
         env.reset()
 
-        # 홀수 게임: Challenger=흑(1), Champion=백(2)
-        # 짝수 게임: Challenger=백(2), Champion=흑(1)
         if g % 2 == 0:
             ch_color   = 1
             agents     = {1: challenger, 2: champ}
@@ -190,7 +190,6 @@ def evaluate(challenger: PPOAgent,
         if env.winner == ch_color:
             ch_wins += 1
 
-    # 평가 중 쌓인 임시 메모리 비우기
     challenger.memory.clear()
     return ch_wins / n_games
 
@@ -207,13 +206,10 @@ class Dashboard:
         self.fS    = pygame.font.SysFont('malgungothic', 12)
         self.clock = pygame.time.Clock()
 
-        # 롤링 그래프 데이터
-        self.hist_win_rate = deque(maxlen=self.MAX_HIST)  # 에피소드 승률
-        self.hist_eval_wr  = deque(maxlen=self.MAX_HIST)  # 평가 승률
+        self.hist_win_rate = deque(maxlen=self.MAX_HIST)
+        self.hist_eval_wr  = deque(maxlen=self.MAX_HIST)
 
-    # 이벤트
     def handle_events(self) -> tuple[bool, bool, bool]:
-        """quit, save_now, export_now 반환."""
         quit_f = save_f = export_f = False
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -225,7 +221,6 @@ class Dashboard:
         if ctrl and keys[pygame.K_e] : export_f = True
         return quit_f, save_f, export_f
 
-    # 전체 렌더링
     def render(self, engine: Engine, stats: dict):
         self.screen.fill(C_BG)
         self._draw_board(engine, stats)
@@ -233,11 +228,9 @@ class Dashboard:
         pygame.display.flip()
         self.clock.tick(60)
 
-    # 보드
     def _draw_board(self, engine: Engine, stats: dict):
         pygame.draw.rect(self.screen, C_BOARD, (0, 0, BOARD_PX, WIN_H))
 
-        # 격자선
         for i in range(BOARD_SIZE):
             x = MARGIN + i * CELL
             pygame.draw.line(self.screen, C_LINE,
@@ -245,13 +238,11 @@ class Dashboard:
             pygame.draw.line(self.screen, C_LINE,
                 (MARGIN, x), (MARGIN+(BOARD_SIZE-1)*CELL, x), 1)
 
-        # 화점
         for p in [3, 7, 11]:
             for q in [3, 7, 11]:
                 pygame.draw.circle(self.screen, C_LINE,
                     (MARGIN+q*CELL, MARGIN+p*CELL), 3)
 
-        # 돌
         board = engine.numpy_board
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
@@ -266,14 +257,12 @@ class Dashboard:
                     pygame.draw.circle(
                         self.screen, C_LINE, (cx, cy), 12, 1)
 
-        # 현재 에피소드에서 Challenger 색 표시
         ch_color = stats.get('ch_color', '?')
         label    = self.fS.render(
             f'Challenger = {"흑돌" if ch_color == 1 else "백돌"}',
             True, C_ACCENT)
         self.screen.blit(label, (MARGIN, WIN_H - 20))
 
-    # 패널
     def _draw_panel(self, s: dict):
         px = BOARD_PX
         pygame.draw.rect(self.screen, C_PANEL, (px, 0, PANEL_W, WIN_H))
@@ -293,18 +282,15 @@ class Dashboard:
                 (px+10, y), (px+PANEL_W-10, y), 1)
             y += 7
 
-        # 타이틀
         txt('Self-Play PPO', C_ACCENT, self.fL, cx=True)
         txt('Challenger  vs  Champion', C_GRAY, cx=True)
         sep()
 
-        # 에피소드
         ep = s.get('episode', 0)
         txt(f'에피소드  {ep:,} / {TOTAL_EPISODES:,}', C_TEXT, self.fM)
         txt(f'스텝 수   {s.get("steps", 0):,}')
         sep()
 
-        # 학습 중 승패 (에피소드 누적)
         chw = s.get('challenger_wins', 0)
         cpw = s.get('champion_wins',   0)
         drw = s.get('draws', 0)
@@ -315,7 +301,6 @@ class Dashboard:
         txt(f'무승부         {drw:,}  ({drw/tot*100:.1f}%)', C_GRAY)
         sep()
 
-        # Champion 평가 결과
         wr = s.get('eval_win_rate', None)
         if wr is not None:
             color = C_GREEN if wr >= PROMOTE_WIN_RATE else C_RED
@@ -328,14 +313,12 @@ class Dashboard:
         txt(f'총 champion 갱신  {s.get("champion_updates", 0)}회', C_BLUE)
         sep()
 
-        # 보상 / Loss
         txt('최근 에피소드', C_YELLOW, self.fM)
         txt(f'보상    {s.get("ep_reward", 0.0):+.2f}')
         loss = s.get('loss', None)
         txt(f'Loss    {loss:.6f}' if isinstance(loss, float) else 'Loss    —')
         sep()
 
-        # 평가 승률 그래프
         wr_v = s.get('eval_win_rate')
         if wr_v is not None:
             self.hist_eval_wr.append(wr_v)
@@ -343,23 +326,19 @@ class Dashboard:
                          self.hist_eval_wr, C_GREEN, '평가 승률 추이')
         y += 60
 
-        # 기준선 표시 (PROMOTE_WIN_RATE)
         pct_txt = self.fS.render(
             f'갱신 기준: {PROMOTE_WIN_RATE*100:.0f}%', True, C_GRAY)
         self.screen.blit(pct_txt, (px+14, y)); y += 18
         sep()
 
-        # 단축키
         txt('[Ctrl+S] 즉시 저장', C_GRAY)
         txt('[Ctrl+E] ZIP 내보내기', C_GRAY)
         txt('[Q] 저장 후 종료', C_GRAY)
 
-    # 미니 그래프
     def _mini_graph(self, x, y, w, h, data, color, label):
         pygame.draw.rect(self.screen, (28, 28, 44), (x, y, w, h))
         pygame.draw.rect(self.screen, C_GRAY,       (x, y, w, h), 1)
 
-        # 기준선 (PROMOTE_WIN_RATE)
         base_y = y + h - 2 - int(PROMOTE_WIN_RATE * (h - 14))
         pygame.draw.line(self.screen, C_YELLOW,
                          (x+1, base_y), (x+w-1, base_y), 1)
@@ -370,7 +349,7 @@ class Dashboard:
         pts = list(data)
         if len(pts) < 2:
             return
-        mn, mx = 0.0, 1.0          # 승률은 항상 0~1 고정 스케일
+        mn, mx = 0.0, 1.0
         rng    = mx - mn
         xs  = [x + int(i/(len(pts)-1)*(w-2))+1 for i in range(len(pts))]
         ys  = [y + h - 2 - int((v-mn)/rng*(h-14))  for v in pts]
@@ -383,28 +362,25 @@ def train(resume: bool = False):
     # ── 에이전트 생성
     challenger = PPOAgent(BOARD_SIZE, player=2)
 
+    start_ep = 0  # ← 시작 에피소드 번호
     if resume:
         print('[RESUME] 체크포인트 불러오는 중...')
-        load_champion(challenger)
+        start_ep = load_champion(challenger)  # ← 에피소드 번호 복원
 
     # 첫 실행이면 랜덤 가중치를 champion 으로 저장
     if not P2_PATH.exists():
-        save_champion(challenger)
+        save_champion(challenger, episode=0)
 
-    # champion 가중치 스냅샷 (메모리에만 보관 — 파일 갱신 없이 비교용)
     champ_weights = challenger.clone_weights()
 
-    # 로그
     log  = load_log()
     summ = log['summary']
 
-    # 대시보드
     dash = Dashboard()
     env  = Engine(BOARD_SIZE)
 
-    # 통계
     stats: dict = {
-        'episode'          : summ['total_episodes'],
+        'episode'          : start_ep,  # ← 복원된 번호로 초기화
         'steps'            : 0,
         'challenger_wins'  : summ['challenger_wins'],
         'champion_wins'    : summ['champion_wins'],
@@ -419,19 +395,17 @@ def train(resume: bool = False):
 
     print(f'[TRAIN] Self-Play PPO 시작 — {TOTAL_EPISODES:,} 에피소드')
     print(f'        장치: {challenger.device}')
+    print(f'        시작 에피소드: {start_ep + 1:,}')  # ← 시작 번호 출력
     print(f'        방식: Challenger vs Champion (Self-Play Curriculum)')
 
-    for ep in range(1, TOTAL_EPISODES + 1):
+    for ep in range(start_ep + 1, TOTAL_EPISODES + 1):  # ← start_ep 이후부터 시작
 
-        # 에피소드 색 배정 (번갈아 가며 편향 방지)
-        ch_color   = 1 if ep % 2 == 1 else 2   # Challenger 색
-        champ_color = 3 - ch_color              # Champion 색
+        ch_color    = 1 if ep % 2 == 1 else 2
+        champ_color = 3 - ch_color
 
-        # champion 추론 에이전트 (가중치 스냅샷 사용)
         champ_agent = challenger.make_champion_agent(champ_weights)
         agents      = {ch_color: challenger, champ_color: champ_agent}
 
-        # 에피소드 진행
         env.reset()
         challenger.memory.clear()
         ep_reward        = 0.0
@@ -447,13 +421,11 @@ def train(resume: bool = False):
             env.make_move(*move)
             step += 1
 
-            # Challenger 관점 보상만 계산·저장
             if cur == ch_color:
                 r = shaped_reward(env, ch_color)
                 ep_reward += r
                 challenger.store_reward(r, env.is_over)
 
-        # 학습 중 승패 집계
         winner = env.winner
         if winner == ch_color:
             challenger_won = True
@@ -462,10 +434,9 @@ def train(resume: bool = False):
             challenger_won = False
             summ['champion_wins'] += 1
         else:
-            challenger_won = None   # 무승부
+            challenger_won = None
             summ['draws'] += 1
 
-        # champion 평가
         if ep % EVAL_EVERY == 0:
             print(f'\n[EVAL]  에피소드 {ep:,} — champion 평가 {EVAL_GAMES}판...')
             wr = evaluate(challenger, champ_weights, EVAL_GAMES)
@@ -473,7 +444,7 @@ def train(resume: bool = False):
                   f'(기준 {PROMOTE_WIN_RATE*100:.0f}%)')
 
             if wr >= PROMOTE_WIN_RATE:
-                save_champion(challenger)
+                save_champion(challenger, episode=ep)  # ← ep 전달
                 champ_weights    = challenger.clone_weights()
                 champion_updated = True
                 stats['champion_updates'] += 1
@@ -486,11 +457,10 @@ def train(resume: bool = False):
             stats['eval_win_rate']    = wr
             stats['champion_updated'] = champion_updated
 
-        # 주기 저장
         if ep % SAVE_EVERY == 0:
+            save_champion(challenger, episode=ep)  # ← ep 전달
             save_log(log)
 
-        # 로그 추가
         record = {
             'episode'         : ep,
             'ch_color'        : ch_color,
@@ -504,7 +474,6 @@ def train(resume: bool = False):
         }
         append_log(log, record)
 
-        # 통계 갱신
         stats.update({
             'episode'        : ep,
             'steps'          : step,
@@ -516,12 +485,11 @@ def train(resume: bool = False):
             'ch_color'       : ch_color,
         })
 
-        # 대시보드 렌더링 + 단축키
         dash.render(env, stats)
         quit_f, save_f, export_f = dash.handle_events()
 
         if save_f:
-            save_champion(challenger)
+            save_champion(challenger, episode=ep)  # ← ep 전달
             save_log(log)
             print(f'[SAVE] 수동 저장 (에피소드 {ep:,})')
         if export_f:
@@ -530,8 +498,7 @@ def train(resume: bool = False):
             print('\n[QUIT] 저장 후 종료')
             break
 
-    # 종료 후 최종 저장
-    save_champion(challenger)
+    save_champion(challenger, episode=ep)  # ← ep 전달
     save_log(log)
     print('[DONE] 학습 종료 — 최종 저장 완료')
     pygame.quit()
