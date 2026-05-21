@@ -37,8 +37,8 @@ class PPOAgent:
     ENTROPY_C   = 0.02    # 0.01 → 0.02: 탐색 강화
     VALUE_C     = 0.5
     EPOCHS      = 4
-    BATCH_SIZE  = 128
-    TRAIN_EVERY = 5      # 10판마다 한 번 학습 (데이터 축적)
+    BATCH_SIZE  = 256
+    TRAIN_EVERY = 10      # 10판마다 한 번 학습 (데이터 축적)
     REWARD_SCALE = 0.02   # 보상 스케일 (50 * 0.02 = 1.0, Tanh 범위에 맞춤)
 
     def __init__(self, board_size: int = 15, player: int = 2):
