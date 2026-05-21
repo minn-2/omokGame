@@ -164,7 +164,7 @@ class Rules:
         return count
    
     # 특정 착수 지점에 형성되는 '열린 3'의 개수를 산출
-  @staticmethod
+    @staticmethod
     def _count_legal_open_threes(board, r, c, player):
         return Rules._count_pattern_matches(board, r, c, player, Rules.OPEN_THREE_PATTERNS)
 
