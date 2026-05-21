@@ -1,6 +1,5 @@
 import numpy as np
 
-
 class Rules:
     
     # [설정] 오목 판정을 위한 4가지 기본 방향 정의
@@ -14,11 +13,9 @@ class Rules:
         (1, -1)   # 우상향 대각선 (↗)
     ]
 
-   
     # [설정] 렌주룰 실전용 주요 공격 및 금수 판정 패턴 정의
     # - 0: 빈 공간, 1: 현재 플레이어의 돌 (흑/백 시뮬레이션 시 동적 매칭)
    
-    
     # 흑의 '삼삼 금수'를 계산하기 위한 '열린 3'의 5가지 패턴 필터
     OPEN_THREE_PATTERNS = [
         [0, 1, 1, 1, 0],          # 1) 기본 열린 3       ( . ○ ○ ○ . )
@@ -28,18 +25,15 @@ class Rules:
         [0, 1, 0, 1, 0, 1, 0],    # 5) 띄엄띄엄 형태의 3 ( . ○ . ○ . ○ . )
     ]
 
-    # 흑의 '사사 금수'를 계산하기 위한 '열린 4'의 4가지 패턴 필터
+    # 흑의 44금수를 계산하기 위한 '열린 4'의 4가지 패턴 필터
     OPEN_FOUR_PATTERNS = [
-        [0, 1, 1, 1, 1, 0],       # 1) 기본 열린 4       ( . ○ ○ ○ ○ . )
-        [0, 1, 1, 1, 0, 1, 0],    # 2) 한 칸 끼운 4 (우) ( . ○ ○ ○ . ○ . )
-        [0, 1, 1, 0, 1, 1, 0],    # 3) 가운데 끼운 4     ( . ○ ○ . ○ ○ . )
-        [0, 1, 0, 1, 1, 1, 0],    # 4) 한 칸 끼운 4 (좌) ( . ○ . ○ ○ ○ . )
+        [0, 1, 1, 1, 1, 0],       # 1) 기본 열린 4
+        [0, 1, 1, 1, 0, 1, 0],    # 2) 한 칸 끼운 4 
+        [0, 1, 1, 0, 1, 1, 0],    # 3) 가운데 끼운 4
+        [0, 1, 0, 1, 1, 1, 0],    # 4) 한 칸 끼운 4
     ]
 
-   
-    # [핵심 로직 1] 승리 판정 함수 (check_win)
-    # - 특정 좌표(r, c)에 돌이 놓였을 때, 5목 이상이 완성되어 승리했는지 판정
-  
+    # 승리 판정 함수 : 특정 좌표(r, c)에 돌이 놓였을 때, 5목 이상이 완성되어 승리했는지 판정
     @staticmethod
     def check_win(board, r, c):
         player = board[r, c]  # 현재 착수한 플레이어 번호 확인 (1: 흑돌, 2: 백돌)
@@ -73,10 +67,7 @@ class Rules:
 
         return False
 
-   
-    # [핵심 로직 2] 흑돌 전용 금수(착수 금지) 판정 함수 (is_forbidden)
-    # - 렌주룰에 따라 흑돌이 두면 안 되는 자리를 필터링 (장목, 44, 33 순으로 체크)
-   
+    # 흑돌 전용 금수(착수 금지) 판정 함수 : 렌주룰에 따라 흑돌이 두면 안 되는 자리를 필터링 (장목, 44, 33 순으로 체크)
     @staticmethod
     def is_forbidden(board, r, c, player):
         # 렌주룰의 금수 규칙은 오직 '흑돌(1)'에게만 적용됨 (백돌은 제약 없이 통과)
@@ -90,7 +81,6 @@ class Rules:
         # 가상으로 착수 시뮬레이션을 하기 위해 해당 자리에 흑돌을 임시로 임베딩
         board[r, c] = player
 
-        # [렌주룰 특수 규정] 
         # 착수한 자리가 금수 조건(예: 33, 44)에 해당하더라도, '동시에 5목이 완성'된다면 
         # 금수 규칙보다 5목 완성(승리)이 우선하므로 금수가 아닌 정상적인 수로 판단합니다.
         if Rules.check_win(board, r, c):
@@ -99,25 +89,23 @@ class Rules:
 
         forbidden = False
 
-        # 1순위: 장목 금수 판정 (돌이 연속으로 6개 이상 놓이게 되는지 확인)
+        # 장목 금수 판정 (돌이 연속으로 6개 이상 놓이게 되는지 확인)
         if Rules._is_overline(board, r, c, player):
             forbidden = True
             
-        # 2순위: 44 금수 판정 (착수 후 정상적인 '열린 4'가 동시에 2개 이상 생성되는지 확인)
+        # 44 금수 판정 (착수 후 정상적인 '열린 4'가 동시에 2개 이상 생성되는지 확인)
         elif Rules._count_legal_open_fours(board, r, c, player) >= 2:
             forbidden = True
             
-        # 3순위: 33 금수 판정 (착수 후 정상적인 '열린 3'이 동시에 2개 이상 생성되는지 확인)
+        # 33 금수 판정 (착수 후 정상적인 '열린 3'이 동시에 2개 이상 생성되는지 확인)
         elif Rules._count_legal_open_threes(board, r, c, player) >= 2:
             forbidden = True
 
-        # 시뮬레이션이 끝났으므로 임시로 임베딩했던 바둑판 좌표를 다시 빈칸(0)으로 복구
+        # 시뮬레이션이 끝났으므로 임시로 임베딩했던 바둑판 좌표를 다시 빈칸으로 복구
         board[r, c] = 0
         return forbidden
 
-    
-    # [보조 내부함수 1] 장목(6목 이상 연속) 유무 검사
-   
+    # 장목(6목 이상 연속) 유무 검사
     @staticmethod
     def _is_overline(board, r, c, player):
         board_size = len(board)
@@ -140,17 +128,15 @@ class Rules:
                 return True
 
         return False
-
    
-    # [보조 내부함수 2] 보드 전체를 전수조사하여 특정 길이의 단순 직선 패턴 개수 카운트
-    
+    # 보드 전체를 전수조사하여 특정 길이의 단순 직선 패턴 개수 카운트
     @staticmethod
     def check_patterns(board, player, length):
         board_size = len(board)
         count = 0
         seen = set()  # 동일한 돌 묶음이 중복으로 카운트되는 것을 방지하기 위한 세트
 
-        # 바둑판 모든 좌표를 탐색 (전수 조사)
+        # 바둑판 모든 좌표를 탐색
         for r in range(board_size):
             for c in range(board_size):
                 if board[r, c] != player:
@@ -185,25 +171,19 @@ class Rules:
                             count += 1
 
         return count
-
    
-    # [보조 내부함수 3] 특정 착수 지점에 형성되는 '열린 3'의 개수를 산출
-    
+    # 특정 착수 지점에 형성되는 '열린 3'의 개수를 산출
   @staticmethod
     def _count_legal_open_threes(board, r, c, player):
         return Rules._count_pattern_matches(board, r, c, player, Rules.OPEN_THREE_PATTERNS)
 
-    
-    # [보조 내부함수 4] 특정 착수 지점에 형성되는 '열린 4'의 개수를 산출
- 
+    # 특정 착수 지점에 형성되는 '열린 4'의 개수를 산출
     @staticmethod
     def _count_legal_open_fours(board, r, c, player):
         return Rules._count_pattern_matches(board, r, c, player, Rules.OPEN_FOUR_PATTERNS)
 
-   
-    # [보조 내부함수 5] 슬라이딩 윈도우 기반 패턴 매칭 공통 알고리즘
+    # 슬라이딩 윈도우 기반 패턴 매칭 공통 알고리즘
     # - 특정 착수 지점(r, c)을 중심으로 1D 라인 데이터를 추출해 상단 패턴 배열과 비교 매칭
-   
     @staticmethod
     def _count_pattern_matches(board, r, c, player, patterns):
         board_size = len(board)
@@ -234,10 +214,8 @@ class Rules:
 
         return count
 
-   
-    # [보조 내부함수 6] 타겟 좌표 중심의 1차원 라인 배열 데이터 및 좌표 맵 추출
+    # 타겟 좌표 중심의 1차원 라인 배열 데이터 및 좌표 맵 추출
     # - 바둑판 밖의 영역은 패턴 매칭 시 오작동하지 않도록 벽면 패딩값(-1) 처리
-
     @staticmethod
     def _get_line_with_pos(board, r, c, dr, dc, board_size, radius=6):
         line = []
