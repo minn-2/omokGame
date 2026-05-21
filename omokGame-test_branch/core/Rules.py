@@ -186,7 +186,7 @@ class Rules:
             # 착수 지점을 중심으로 앞뒤 6칸씩 수평선 추출
             line, positions = Rules._get_line_with_pos(board, r, c, dr, dc, board_size, radius=6)
 
-            # 비교하고자 하는 패턴 목록(33,44)을 하나씩 대조
+            # 비교하고자 하는 패턴 목록을 하나씩 대조
             for pat in patterns:
                 plen = len(pat)
                 # 슬라이딩 윈도우 기법으로 1D 라인 위를 한 칸씩 이동하며 패턴 비교
