@@ -37,7 +37,7 @@ class PPOAgent:
     ENTROPY_C   = 0.02    # 0.01 → 0.02: 탐색 강화
     VALUE_C     = 0.5
     EPOCHS      = 4
-    BATCH_SIZE  = 256
+    BATCH_SIZE  = 32
     TRAIN_EVERY = 10      # 10판마다 한 번 학습 (데이터 축적)
     REWARD_SCALE = 0.02   # 보상 스케일 (50 * 0.02 = 1.0, Tanh 범위에 맞춤)
 
@@ -230,3 +230,4 @@ class PPOAgent:
         champ.old_net.load_state_dict(sd)
         champ.old_net.eval()
         return champ
+    
