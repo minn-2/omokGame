@@ -11,19 +11,20 @@ from ai.agent  import PPOAgent
 from core.Rules import Rules
 
 # ── 경로 설정
-CKPT_DIR      = Path('checkpoints')               # 로컬 체크포인트 폴더
-P2_PATH       = CKPT_DIR / 'ppo_p2.pt'            # 모델 가중치 파일
-LOG_PATH      = CKPT_DIR / 'train_log.json'        # 학습 로그 파일
-DRIVE_CKPT    = Path('/content/drive/MyDrive/omok_checkpoints')  # Drive 백업 경로
+CKPT_DIR      = Path('checkpoints')
+P2_PATH       = CKPT_DIR / 'ppo_p2.pt'
+LOG_PATH      = CKPT_DIR / 'train_log.json'
+DRIVE_CKPT    = Path('/content/drive/MyDrive/omok_checkpoints')  # Colab Drive 경로
+KAGGLE_OUT    = Path('/kaggle/working')                           # Kaggle 출력 경로
 
 # ── 학습 설정
 BOARD_SIZE       = 15
-TOTAL_EPISODES   = 1000000
-SAVE_EVERY       = 200       # 로컬 저장 주기
-DRIVE_SAVE_EVERY = 1000      # Drive 백업 주기 (세션 끊김 대비)
-EVAL_EVERY       = 200       # champion 평가 주기
-EVAL_GAMES       = 60        # 평가 대결 수 (흑/백 각 30판, 반드시 짝수)
-PROMOTE_WIN_RATE = 0.55      # champion 갱신 기준 승률
+TOTAL_EPISODES   = 500000
+SAVE_EVERY       = 200
+DRIVE_SAVE_EVERY = 1000
+EVAL_EVERY       = 200
+EVAL_GAMES       = 60        # 흑/백 각 30판 (반드시 짝수)
+PROMOTE_WIN_RATE = 0.55
 
 
 # ──────────────────────────────────────────
@@ -31,9 +32,12 @@ PROMOTE_WIN_RATE = 0.55      # champion 갱신 기준 승률
 # ──────────────────────────────────────────
 
 def ensure_dirs():
-    """로컬 및 Drive 체크포인트 폴더 생성."""
+    """로컬 체크포인트 폴더 생성. Drive/Kaggle 폴더는 있을 때만 생성."""
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
-    DRIVE_CKPT.mkdir(parents=True, exist_ok=True)
+    try:
+        DRIVE_CKPT.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
 
 
 def save_champion(agent: PPOAgent, episode: int = 0):
@@ -48,32 +52,43 @@ def save_champion(agent: PPOAgent, episode: int = 0):
 
 
 def save_to_drive(episode: int):
-    """로컬 체크포인트를 Google Drive 에 백업."""
-    try:
-        import shutil
-        ensure_dirs()
-        for p in [P2_PATH, LOG_PATH]:
-            if p.exists():
-                shutil.copy(p, DRIVE_CKPT / p.name)
-        print(f'  [DRIVE] 백업 완료 (ep {episode:,}) → {DRIVE_CKPT}')
-    except Exception as e:
-        print(f'  [DRIVE] 백업 실패: {e}')
+    """로컬 체크포인트를 Google Drive 또는 Kaggle output 에 백업."""
+    import shutil
+    # Kaggle 환경
+    if KAGGLE_OUT.exists():
+        try:
+            for p in [P2_PATH, LOG_PATH]:
+                if p.exists():
+                    shutil.copy(p, KAGGLE_OUT / p.name)
+            print(f'  [KAGGLE] 백업 완료 (ep {episode:,}) → {KAGGLE_OUT}')
+        except Exception as e:
+            print(f'  [KAGGLE] 백업 실패: {e}')
+    # Colab Drive 환경
+    elif DRIVE_CKPT.exists():
+        try:
+            for p in [P2_PATH, LOG_PATH]:
+                if p.exists():
+                    shutil.copy(p, DRIVE_CKPT / p.name)
+            print(f'  [DRIVE] 백업 완료 (ep {episode:,}) → {DRIVE_CKPT}')
+        except Exception as e:
+            print(f'  [DRIVE] 백업 실패: {e}')
 
 
 def load_from_drive():
-    """Drive 체크포인트를 로컬로 복사 (resume 시 호출)."""
-    try:
-        import shutil
-        for p in [P2_PATH, LOG_PATH]:
-            src = DRIVE_CKPT / p.name
-            if src.exists():
-                ensure_dirs()
-                shutil.copy(src, p)
-                print(f'  [DRIVE→LOCAL] {p.name} 복사 완료')
-            else:
-                print(f'  [DRIVE→LOCAL] {p.name} 없음 — 스킵')
-    except Exception as e:
-        print(f'  [DRIVE→LOCAL] 실패: {e}')
+    """Drive 또는 Kaggle input 에서 체크포인트를 로컬로 복사."""
+    import shutil
+    # Kaggle 환경
+    kaggle_input = Path('/kaggle/input/datasets/hellocarrot/omokgame/files_omokgame/omokGame-test_branch/checkpoints')
+    src_dir = kaggle_input if kaggle_input.exists() else DRIVE_CKPT
+
+    for p in [P2_PATH, LOG_PATH]:
+        src = src_dir / p.name
+        if src.exists():
+            ensure_dirs()
+            shutil.copy(src, p)
+            print(f'  [LOAD] {p.name} 복사 완료 ← {src}')
+        else:
+            print(f'  [SKIP] {p.name} 없음')
 
 
 def load_champion(agent: PPOAgent) -> int:
@@ -159,7 +174,7 @@ def shaped_reward(engine: Engine, player: int) -> float:
     - 승리: +50 / 패배: -50
     - 4목 형성: +8 / 상대 4목: -15
     - 3목 형성: +3 / 상대 3목: -5
-    실제 agent.store_reward() 에서 REWARD_SCALE(0.02) 로 스케일 조정됨.
+    agent.store_reward() 에서 REWARD_SCALE(0.02) 로 스케일 조정됨.
     """
     board = engine.board.board
     opp   = 3 - player
@@ -186,23 +201,19 @@ def evaluate(challenger: PPOAgent,
     Challenger vs Champion 평가전.
     전반 n_games//2 판: challenger = 흑돌(1)
     후반 n_games//2 판: challenger = 백돌(2)
-    → 흑/백 승률을 분리하여 반환.
-
-    Returns:
-        {'total': float, 'black': float, 'white': float}
+    Returns: {'total': float, 'black': float, 'white': float}
     """
     assert n_games % 2 == 0, "EVAL_GAMES 는 짝수여야 합니다"
     half  = n_games // 2
     champ = challenger.make_champion_agent(champ_weights)
 
-    black_wins = 0  # challenger 가 흑돌일 때 승리 횟수
-    white_wins = 0  # challenger 가 백돌일 때 승리 횟수
+    black_wins = 0
+    white_wins = 0
 
     for g in range(n_games):
         env = Engine(BOARD_SIZE)
         env.reset()
 
-        # 전반: challenger = 흑(1) / 후반: challenger = 백(2)
         if g < half:
             ch_color = 1
             agents   = {1: challenger, 2: champ}
@@ -221,7 +232,7 @@ def evaluate(challenger: PPOAgent,
             if ch_color == 1: black_wins += 1
             else            : white_wins += 1
 
-    # 평가 후 메모리 초기화 (평가 데이터가 학습에 섞이지 않도록)
+    # 평가 데이터가 학습에 섞이지 않도록 메모리 초기화
     challenger.memory.clear()
 
     return {
@@ -232,7 +243,7 @@ def evaluate(challenger: PPOAgent,
 
 
 # ──────────────────────────────────────────
-# 터미널 출력 (Pygame 대신 사용)
+# 터미널 출력
 # ──────────────────────────────────────────
 
 def print_stats(ep: int, stats: dict, eval_result: dict | None = None):
@@ -241,10 +252,10 @@ def print_stats(ep: int, stats: dict, eval_result: dict | None = None):
     progress = int(ep / TOTAL_EPISODES * bar_len)
     bar      = '█' * progress + '░' * (bar_len - progress)
 
-    chw = stats['challenger_wins']
-    cpw = stats['champion_wins']
-    drw = stats['draws']
-    tot = max(chw + cpw + drw, 1)
+    chw  = stats['challenger_wins']
+    cpw  = stats['champion_wins']
+    drw  = stats['draws']
+    tot  = max(chw + cpw + drw, 1)
     loss = stats.get('loss')
 
     print(f'\n{"─"*58}')
@@ -279,29 +290,23 @@ def print_stats(ep: int, stats: dict, eval_result: dict | None = None):
 def train(resume: bool = False):
     ensure_dirs()
 
-    # 에이전트 생성
     challenger = PPOAgent(BOARD_SIZE, player=2)
 
-    # resume: Drive → 로컬 복사 후 가중치 로드
     start_ep = 0
     if resume:
-        print('[RESUME] Drive에서 체크포인트 복사 중...')
+        print('[RESUME] 체크포인트 복사 중...')
         load_from_drive()
         start_ep = load_champion(challenger)
 
-    # 첫 실행이면 랜덤 가중치를 champion 으로 저장
     if not P2_PATH.exists():
         save_champion(challenger, episode=0)
         save_to_drive(0)
 
-    # champion 가중치 스냅샷 (challenger 가 이길 때만 갱신)
     champ_weights = challenger.clone_weights()
+    log           = load_log()
+    summ          = log['summary']
+    best_eval_wr  = 0.0
 
-    log          = load_log()
-    summ         = log['summary']
-    best_eval_wr = 0.0
-
-    # 통계 딕셔너리 초기화
     stats: dict = {
         'episode'         : start_ep,
         'steps'           : 0,
@@ -329,11 +334,9 @@ def train(resume: bool = False):
 
     for ep in range(start_ep + 1, TOTAL_EPISODES + 1):
 
-        # 홀수 에피소드: challenger = 흑(1) / 짝수: challenger = 백(2)
         ch_color    = 1 if ep % 2 == 1 else 2
         champ_color = 3 - ch_color
 
-        # champion 스냅샷으로 상대 에이전트 생성
         champ_agent = challenger.make_champion_agent(champ_weights)
         agents      = {ch_color: challenger, champ_color: champ_agent}
 
@@ -355,12 +358,16 @@ def train(resume: bool = False):
             env.make_move(*move)
             step += 1
 
-            # challenger 차례일 때만 보상 기록
             if cur == ch_color:
+                # challenger 차례: 보상 기록
                 r = shaped_reward(env, ch_color)
                 ep_reward += r
-                # store_reward 내부에서 TRAIN_EVERY(10)판마다 PPO 학습 실행
                 challenger.store_reward(r, env.is_over)
+            elif env.is_over and cur != ch_color:
+                # 상대방 마지막 수로 게임 종료 시 패배 보상 전달
+                r = shaped_reward(env, ch_color)
+                ep_reward += r
+                challenger.store_reward(r, True)
 
         # ── 승패 집계
         winner = env.winner
@@ -371,7 +378,7 @@ def train(resume: bool = False):
         else:
             challenger_won = None;  summ['draws']           += 1
 
-        # ── champion 평가 (EVAL_EVERY 마다)
+        # ── champion 평가
         if ep % EVAL_EVERY == 0:
             print(f'\n[EVAL] ep {ep:,} — {EVAL_GAMES}판 평가 중'
                   f' (흑 {EVAL_GAMES//2}판 / 백 {EVAL_GAMES//2}판)...')
@@ -382,11 +389,10 @@ def train(resume: bool = False):
                   f'  백돌: {wr["white"]*100:.1f}%'
                   f'  (기준 {PROMOTE_WIN_RATE*100:.0f}%)')
 
-            # 전체 승률이 기준 이상 + 역대 최고일 때만 champion 갱신
             if wr['total'] >= PROMOTE_WIN_RATE and wr['total'] > best_eval_wr:
                 best_eval_wr     = wr['total']
                 save_champion(challenger, episode=ep)
-                save_to_drive(ep)                    # 갱신 즉시 Drive 백업
+                save_to_drive(ep)
                 champ_weights    = challenger.clone_weights()
                 champion_updated = True
                 stats['champion_updates'] += 1
@@ -404,7 +410,7 @@ def train(resume: bool = False):
             save_champion(challenger, episode=ep)
             save_log(log)
 
-        # ── Drive 정기 백업 (세션 끊김 대비)
+        # ── 정기 백업
         if ep % DRIVE_SAVE_EVERY == 0:
             save_to_drive(ep)
             save_log(log)
@@ -423,7 +429,6 @@ def train(resume: bool = False):
         }
         append_log(log, record)
 
-        # ── stats 업데이트
         stats.update({
             'episode'        : ep,
             'steps'          : step,
@@ -442,7 +447,7 @@ def train(resume: bool = False):
                 last_eval if ep % EVAL_EVERY == 0 else None)
             last_eval = None
 
-    # ── 학습 종료 후 최종 저장
+    # ── 최종 저장
     save_champion(challenger, episode=ep)
     save_to_drive(ep)
     save_log(log)
@@ -454,9 +459,9 @@ def train(resume: bool = False):
 # ──────────────────────────────────────────
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='오목 Self-Play PPO (Colab용)')
+    parser = argparse.ArgumentParser(description='오목 Self-Play PPO (Colab/Kaggle용)')
     parser.add_argument('--resume', action='store_true',
-                        help='Drive에서 체크포인트를 불러와 이어서 학습')
+                        help='체크포인트를 불러와 이어서 학습')
     parser.add_argument('--export', action='store_true',
                         help='ZIP 내보내기만 실행하고 종료')
     args = parser.parse_args()
