@@ -22,9 +22,11 @@ BOARD_SIZE       = 15
 TOTAL_EPISODES   = 500000
 SAVE_EVERY       = 200
 DRIVE_SAVE_EVERY = 1000
-EVAL_EVERY       = 200
-EVAL_GAMES       = 60        # 흑/백 각 30판 (반드시 짝수)
+EVAL_EVERY       = 500
+EVAL_GAMES       = 40        # 흑/백 각 20판 (반드시 짝수)
 PROMOTE_WIN_RATE = 0.55
+MAX_HALF_MOVES   = BOARD_SIZE * BOARD_SIZE * 2
+MAX_INVALID_MOVES = 8
 
 
 # ──────────────────────────────────────────
@@ -190,6 +192,16 @@ def shaped_reward(engine: Engine, player: int) -> float:
     return float(r)
 
 
+def safe_make_move(env: Engine, move: tuple[int, int] | None) -> bool:
+    """불법 수/실패 수를 안전하게 거르고, 성공 여부를 반환."""
+    if move is None:
+        return False
+    try:
+        return bool(env.make_move(*move))
+    except Exception:
+        return False
+
+
 # ──────────────────────────────────────────
 # Champion 평가 — 흑/백 승률 분리
 # ──────────────────────────────────────────
@@ -221,12 +233,18 @@ def evaluate(challenger: PPOAgent,
             ch_color = 2
             agents   = {1: champ, 2: challenger}
 
-        while not env.is_over:
+        step = 0
+        invalid_moves = 0
+        while not env.is_over and step < MAX_HALF_MOVES:
             cur  = env.current_player
             move = agents[cur].decide_next_move(env)
-            if move is None:
-                break
-            env.make_move(*move)
+            if not safe_make_move(env, move):
+                invalid_moves += 1
+                if invalid_moves >= MAX_INVALID_MOVES:
+                    break
+                continue
+            invalid_moves = 0
+            step += 1
 
         if env.winner == ch_color:
             if ch_color == 1: black_wins += 1
@@ -349,13 +367,17 @@ def train(resume: bool = False):
         champion_updated = False
 
         # ── 한 판 진행
-        while not env.is_over:
+        invalid_moves = 0
+        while not env.is_over and step < MAX_HALF_MOVES:
             cur   = env.current_player
             agent = agents[cur]
             move  = agent.decide_next_move(env)
-            if move is None:
-                break
-            env.make_move(*move)
+            if not safe_make_move(env, move):
+                invalid_moves += 1
+                if invalid_moves >= MAX_INVALID_MOVES:
+                    break
+                continue
+            invalid_moves = 0
             step += 1
 
             if cur == ch_color:
