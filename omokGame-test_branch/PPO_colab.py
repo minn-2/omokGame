@@ -12,536 +12,269 @@ from ai.engine import Engine
 from ai.agent  import PPOAgent
 from core.Rules import Rules
 
-# ── 경로 설정
 CKPT_DIR      = Path('checkpoints')
 P2_PATH       = CKPT_DIR / 'ppo_p2.pt'
 LOG_PATH      = CKPT_DIR / 'train_log.json'
 DRIVE_CKPT    = Path('/content/drive/MyDrive/omok_checkpoints')
 KAGGLE_OUT    = Path('/kaggle/working')
 
-# ── 학습 설정
-BOARD_SIZE       = 15
-TOTAL_EPISODES   = 100000
-SAVE_EVERY       = 200
-DRIVE_SAVE_EVERY = 1000
-EVAL_EVERY       = 500
-EVAL_GAMES       = 40        # 반드시 짝수
-PROMOTE_WIN_RATE = 0.55
-MAX_HALF_MOVES   = BOARD_SIZE * BOARD_SIZE * 2
+BOARD_SIZE        = 15
+TOTAL_EPISODES    = 1_500_000
+SAVE_EVERY        = 500
+DRIVE_SAVE_EVERY  = 2000
+EVAL_EVERY        = 1000
+EVAL_GAMES        = 20
+PROMOTE_WIN_RATE  = 0.55
+MAX_HALF_MOVES    = BOARD_SIZE * BOARD_SIZE * 2
 MAX_INVALID_MOVES = 8
+HEURISTIC_UNTIL   = 30_000
 
-# ── 커리큘럼 설정
-# HEURISTIC_UNTIL 에피소드까지는 HeuristicBot 과 대결,
-# 이후 셀프플레이로 자동 전환
-HEURISTIC_UNTIL  = 300000   # 15만 번까지 휴리스틱 봇
-
-
-# ──────────────────────────────────────────
-# HeuristicBot
-# ──────────────────────────────────────────
 
 class HeuristicBot:
-    """
-    강화된 규칙 기반 오목 봇.
-    우선순위:
-      1. 내 5목 완성
-      2. 상대 5목 차단
-      3. 내 열린 4목 (즉시 승리)
-      4. 상대 열린 4목 차단
-      5. 내 사삼(4+3) 이중 위협
-      6. 상대 사삼 차단
-      7. 내 쌍삼(3+3) 이중 위협
-      8. 상대 쌍삼 차단
-      9. 내 3목 연결
-      10. 상대 3목 차단
-      11. 중앙 가중 랜덤
-    """
-
-    def decide_next_move(self, engine) -> tuple[int, int] | None:
+    def decide_next_move(self, engine,
+                         temperature=1.0, use_mcts=False):
         board  = engine.board.board
         player = engine.current_player
         opp    = 3 - player
         n      = engine.board_size
-
         candidates = self._candidates(board, n)
         if not candidates:
             return None
-
         if player == 1:
-            candidates = [
-                (r, c) for r, c in candidates
-                if not Rules.is_forbidden(board, r, c, 1)
-            ]
+            candidates = [(r,c) for r,c in candidates
+                          if not Rules.is_forbidden(board, r, c, 1)]
         if not candidates:
             return None
-
-        # 1. 내 5목
-        m = self._find_n(board, candidates, player, 5, n)
-        if m: return m
-        # 2. 상대 5목 차단
-        m = self._find_n(board, candidates, opp, 5, n)
-        if m: return m
-        # 3. 내 열린 4목
-        m = self._find_open_four(board, candidates, player, n)
-        if m: return m
-        # 4. 상대 열린 4목 차단
-        m = self._find_open_four(board, candidates, opp, n)
-        if m: return m
-        # 5. 내 사삼(4+3) 이중 위협
-        m = self._find_double_threat(board, candidates, player, n, 4, 3)
-        if m: return m
-        # 6. 상대 사삼 차단
-        m = self._find_double_threat(board, candidates, opp, n, 4, 3)
-        if m: return m
-        # 7. 내 쌍삼(3+3) 이중 위협
-        m = self._find_double_threat(board, candidates, player, n, 3, 3)
-        if m: return m
-        # 8. 상대 쌍삼 차단
-        m = self._find_double_threat(board, candidates, opp, n, 3, 3)
-        if m: return m
-        # 9. 내 3목
-        m = self._find_n(board, candidates, player, 3, n)
-        if m: return m
-        # 10. 상대 3목 차단
-        m = self._find_n(board, candidates, opp, 3, n)
-        if m: return m
-        # 11. fallback
+        for length, target in [(5,player),(5,opp),(4,player),(4,opp),(3,player),(3,opp)]:
+            move = self._find_threat(board, candidates, target, length, n)
+            if move:
+                return move
         return self._weighted_random(candidates, n)
 
-    # ── 후보 칸 수집
-    def _candidates(self, board, n) -> list[tuple[int, int]]:
+    def _candidates(self, board, n):
         occupied = np.argwhere(board != 0)
         if len(occupied) == 0:
-            c = n // 2
-            return [(c, c)]
+            c = n // 2; return [(c,c)]
         seen = set()
         for or_, oc in occupied:
-            for dr in range(-2, 3):
-                for dc in range(-2, 3):
-                    nr, nc = int(or_) + dr, int(oc) + dc
-                    if (0 <= nr < n and 0 <= nc < n
-                            and board[nr, nc] == 0
-                            and (nr, nc) not in seen):
-                        seen.add((nr, nc))
+            for dr in range(-2,3):
+                for dc in range(-2,3):
+                    nr, nc = int(or_)+dr, int(oc)+dc
+                    if 0<=nr<n and 0<=nc<n and board[nr,nc]==0 and (nr,nc) not in seen:
+                        seen.add((nr,nc))
         return list(seen)
 
-    # ── length 이상 연속이 되는 칸 탐색
-    def _find_n(self, board, candidates, player,
-                length, n) -> tuple[int, int] | None:
-        best_score = -1
-        best       = None
-        for r, c in candidates:
-            board[r, c] = player
-            score = self._max_consec(board, r, c, player, n)
-            board[r, c] = 0
+    def _find_threat(self, board, candidates, player, length, n):
+        best, best_score = None, -1
+        for r,c in candidates:
+            board[r,c] = player
+            score = self._max_len(board,r,c,player,n)
+            board[r,c] = 0
             if score >= length and score > best_score:
-                best_score = score
-                best       = (r, c)
+                best_score = score; best = (r,c)
         return best
 
-    # ── 열린 4목: 놓았을 때 양쪽이 열린 4연속
-    def _find_open_four(self, board, candidates, player,
-                        n) -> tuple[int, int] | None:
-        for r, c in candidates:
-            board[r, c] = player
-            found = self._has_open_four(board, r, c, player, n)
-            board[r, c] = 0
-            if found:
-                return (r, c)
-        return None
-
-    def _has_open_four(self, board, r, c, player, n) -> bool:
-        for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
-            cnt  = 1
-            ends = [False, False]
-            for si, sign in enumerate((1, -1)):
-                nr, nc = r + dr*sign, c + dc*sign
-                while (0 <= nr < n and 0 <= nc < n
-                       and board[nr, nc] == player):
-                    cnt += 1
-                    nr  += dr * sign
-                    nc  += dc * sign
-                if (0 <= nr < n and 0 <= nc < n
-                        and board[nr, nc] == 0):
-                    ends[si] = True
-            if cnt >= 4 and all(ends):
-                return True
-        return False
-
-    # ── 이중 위협: 한 칸에 놓았을 때 need_a + need_b 라인 동시 생성
-    def _find_double_threat(self, board, candidates, player,
-                             n, need_a, need_b) -> tuple[int, int] | None:
-        for r, c in candidates:
-            board[r, c] = player
-            threats = self._count_threat_lines(board, r, c, player,
-                                               n, need_a, need_b)
-            board[r, c] = 0
-            if threats >= 2:
-                return (r, c)
-        return None
-
-    def _count_threat_lines(self, board, r, c, player,
-                             n, need_a, need_b) -> int:
-        """4방향에서 열린 need_a 또는 열린 need_b 라인 수 반환."""
-        count = 0
-        for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
-            cnt       = 1
-            open_ends = 0
-            for sign in (1, -1):
-                nr, nc = r + dr*sign, c + dc*sign
-                while (0 <= nr < n and 0 <= nc < n
-                       and board[nr, nc] == player):
-                    cnt += 1
-                    nr  += dr * sign
-                    nc  += dc * sign
-                if (0 <= nr < n and 0 <= nc < n
-                        and board[nr, nc] == 0):
-                    open_ends += 1
-            if cnt >= need_a and open_ends >= 1:
-                count += 1
-            elif cnt >= need_b and open_ends >= 2:
-                count += 1
-        return count
-
-    # ── 4방향 최대 연속 길이
-    def _max_consec(self, board, r, c, player, n) -> int:
+    def _max_len(self, board, r, c, player, n):
         best = 1
-        for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
+        for dr,dc in [(0,1),(1,0),(1,1),(1,-1)]:
             cnt = 1
-            for sign in (1, -1):
-                nr, nc = r + dr*sign, c + dc*sign
-                while (0 <= nr < n and 0 <= nc < n
-                       and board[nr, nc] == player):
-                    cnt += 1
-                    nr  += dr * sign
-                    nc  += dc * sign
-            best = max(best, cnt)
+            for sign in (1,-1):
+                nr,nc = r+dr*sign, c+dc*sign
+                while 0<=nr<n and 0<=nc<n and board[nr,nc]==player:
+                    cnt+=1; nr+=dr*sign; nc+=dc*sign
+            best = max(best,cnt)
         return best
 
-    # ── 중앙 가중 랜덤
-    def _weighted_random(self, candidates,
-                          n) -> tuple[int, int] | None:
-        if not candidates:
-            return None
-        center  = n // 2
-        weights = [
-            1.0 / (abs(r - center) + abs(c - center) + 1)
-            for r, c in candidates
-        ]
-        total   = sum(weights)
-        weights = [w / total for w in weights]
-        idx     = random.choices(range(len(candidates)),
-                                 weights=weights, k=1)[0]
+    def _weighted_random(self, candidates, n):
+        if not candidates: return None
+        center = n//2
+        weights = [1.0/(abs(r-center)+abs(c-center)+1) for r,c in candidates]
+        total = sum(weights); weights = [w/total for w in weights]
+        idx = random.choices(range(len(candidates)), weights=weights, k=1)[0]
         return candidates[idx]
 
 
-# ──────────────────────────────────────────
-# 파일 유틸
-# ──────────────────────────────────────────
-
 def ensure_dirs():
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        DRIVE_CKPT.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    try: DRIVE_CKPT.mkdir(parents=True, exist_ok=True)
+    except Exception: pass
 
-
-def save_champion(agent: PPOAgent, episode: int = 0):
+def save_champion(agent, episode=0):
     ensure_dirs()
-    torch.save({
-        'net'      : agent.net.state_dict(),
-        'optimizer': agent.optimizer.state_dict(),
-        'episode'  : episode,
-    }, P2_PATH)
-    print(f'  [♛ CHAMPION] 로컬 저장 완료 (ep {episode:,})')
+    torch.save({'net':agent.net.state_dict(),
+                'optimizer':agent.optimizer.state_dict(),
+                'episode':episode}, P2_PATH)
+    print(f'  [♛] 저장 (ep {episode:,})')
 
-
-def save_to_drive(episode: int):
+def save_to_drive(episode):
     import shutil
-    if KAGGLE_OUT.exists():
-        try:
-            for p in [P2_PATH, LOG_PATH]:
-                if p.exists():
-                    shutil.copy(p, KAGGLE_OUT / p.name)
-            print(f'  [KAGGLE] 백업 완료 (ep {episode:,})')
-        except Exception as e:
-            print(f'  [KAGGLE] 백업 실패: {e}')
-    elif DRIVE_CKPT.exists():
-        try:
-            for p in [P2_PATH, LOG_PATH]:
-                if p.exists():
-                    shutil.copy(p, DRIVE_CKPT / p.name)
-            print(f'  [DRIVE] 백업 완료 (ep {episode:,})')
-        except Exception as e:
-            print(f'  [DRIVE] 백업 실패: {e}')
-
+    target = KAGGLE_OUT if KAGGLE_OUT.exists() else DRIVE_CKPT
+    try:
+        for p in [P2_PATH, LOG_PATH]:
+            if p.exists(): shutil.copy(p, target/p.name)
+        print(f'  [백업] (ep {episode:,})')
+    except Exception as e:
+        print(f'  [백업 실패] {e}')
 
 def load_from_drive():
     import shutil
     kaggle_input = Path('/kaggle/input/datasets/hellocarrot/omokgame/files_omokgame/omokGame-test_branch/checkpoints')
     src_dir = kaggle_input if kaggle_input.exists() else DRIVE_CKPT
     for p in [P2_PATH, LOG_PATH]:
-        src = src_dir / p.name
+        src = src_dir/p.name
         if src.exists():
-            ensure_dirs()
-            shutil.copy(src, p)
-            print(f'  [LOAD] {p.name} 복사 완료 ← {src}')
-        else:
-            print(f'  [SKIP] {p.name} 없음')
+            ensure_dirs(); shutil.copy(src,p); print(f'  [LOAD] {p.name}')
+        else: print(f'  [SKIP] {p.name}')
 
-
-def load_champion(agent: PPOAgent) -> int:
+def load_champion(agent):
     if P2_PATH.exists():
         ckpt = torch.load(P2_PATH, map_location=agent.device)
         agent.net.load_state_dict(ckpt['net'])
         agent.old_net.load_state_dict(ckpt['net'])
         agent.optimizer.load_state_dict(ckpt['optimizer'])
-        ep = ckpt.get('episode', 0)
-        print(f'  [LOAD] 체크포인트 로드 ← {P2_PATH} (ep {ep:,})')
+        ep = ckpt.get('episode',0)
+        print(f'  [LOAD] ep {ep:,}')
         return ep
-    else:
-        print(f'  [SKIP] {P2_PATH} 없음 — 랜덤 가중치로 시작')
-        return 0
+    print('  [SKIP] 랜덤 가중치로 시작')
+    return 0
 
-
-def load_log() -> dict:
+def load_log():
     if LOG_PATH.exists():
-        with open(LOG_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        with open(LOG_PATH,'r',encoding='utf-8') as f: return json.load(f)
     return {
-        'meta': {
-            'board_size': BOARD_SIZE,
-            'mode'      : 'Curriculum → Self-Play PPO',
-            'created_at': datetime.now().isoformat(timespec='seconds'),
-            'updated_at': '',
-        },
-        'episodes': [],
-        'summary' : {
-            'total_episodes'  : 0,
-            'challenger_wins' : 0,
-            'champion_wins'   : 0,
-            'draws'           : 0,
-            'champion_updates': 0,
-        },
+        'meta':{'board_size':BOARD_SIZE,'mode':'Curriculum→Self-Play PPO',
+                'created_at':datetime.now().isoformat(timespec='seconds'),'updated_at':''},
+        'episodes':[],
+        'summary':{'total_episodes':0,'challenger_wins':0,'champion_wins':0,
+                   'draws':0,'champion_updates':0},
     }
 
-
-def append_log(log: dict, record: dict):
+def append_log(log, record):
     log['episodes'].append(record)
-    s = log['summary']
-    s['total_episodes'] += 1
+    s = log['summary']; s['total_episodes'] += 1
     w = record.get('challenger_won')
-    if w is True   : s['challenger_wins'] += 1
-    elif w is False: s['champion_wins']   += 1
-    else           : s['draws']           += 1
-    if record.get('champion_updated'):
-        s['champion_updates'] += 1
+    if w is True: s['challenger_wins'] += 1
+    elif w is False: s['champion_wins'] += 1
+    else: s['draws'] += 1
+    if record.get('champion_updated'): s['champion_updates'] += 1
     log['meta']['updated_at'] = datetime.now().isoformat(timespec='seconds')
 
-
-def save_log(log: dict):
+def save_log(log):
     ensure_dirs()
-    with open(LOG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
+    with open(LOG_PATH,'w',encoding='utf-8') as f: json.dump(log,f,ensure_ascii=False,indent=2)
 
-
-def export_zip(out_dir: str = '.') -> str:
+def export_zip(out_dir='.'):
     ensure_dirs()
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    zp = Path(out_dir) / f'omok_p2_{ts}.zip'
-    with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for p in [P2_PATH, LOG_PATH]:
-            if p.exists():
-                zf.write(p, arcname=p.name)
-                print(f'  [ZIP] {p.name}')
-    print(f'[EXPORT] → {zp}')
-    return str(zp)
+    zp = Path(out_dir)/f'omok_p2_{ts}.zip'
+    with zipfile.ZipFile(zp,'w',zipfile.ZIP_DEFLATED) as zf:
+        for p in [P2_PATH,LOG_PATH]:
+            if p.exists(): zf.write(p,arcname=p.name)
+    print(f'[EXPORT] → {zp}'); return str(zp)
 
 
-# ──────────────────────────────────────────
-# 보상 함수
-# ──────────────────────────────────────────
-
-def _max_consecutive(board, r, c, player, n) -> int:
-    """(r,c) 돌 기준 4방향 최대 연속 길이."""
+def _max_len(board, r, c, player, n):
     best = 1
-    for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
+    for dr,dc in [(0,1),(1,0),(1,1),(1,-1)]:
         cnt = 1
-        for sign in (1, -1):
-            nr, nc = r + dr*sign, c + dc*sign
-            while (0 <= nr < n and 0 <= nc < n
-                   and board[nr, nc] == player):
-                cnt += 1
-                nr  += dr * sign
-                nc  += dc * sign
-        best = max(best, cnt)
+        for sign in (1,-1):
+            nr,nc = r+dr*sign, c+dc*sign
+            while 0<=nr<n and 0<=nc<n and board[nr,nc]==player:
+                cnt+=1; nr+=dr*sign; nc+=dc*sign
+        best = max(best,cnt)
     return best
 
-
-def _board_max_consecutive(board, player, n) -> int:
-    """보드 전체에서 player 의 최대 연속 길이."""
-    best = 0
-    for r in range(n):
-        for c in range(n):
-            if board[r, c] == player:
-                v = _max_consecutive(board, r, c, player, n)
-                if v > best:
-                    best = v
-    return best
-
-
-def shaped_reward(engine: Engine, move: tuple[int, int],
-                  player: int) -> float:
-    """
-    make_move() 직후 호출.
-    방금 놓은 move 좌표 기준으로 보상 계산 → 중복 보상 없음.
-    """
+def shaped_reward(engine, my_move, opp_move, player):
     board = engine.board.board
     opp   = 3 - player
     n     = engine.board_size
 
     if engine.is_over:
         if engine.winner == player: return  50.0
-        if engine.winner == opp   : return -45.0
+        if engine.winner == opp:    return -45.0
         return 0.0
 
-    r, c   = move
-    reward = 0.2  # 생존 보너스
-
-    # 내 연속 길이 (방금 놓은 돌 기준)
-    my_len = _max_consecutive(board, r, c, player, n)
+    reward = 0.2
+    mr, mc = my_move
+    my_len = _max_len(board, mr, mc, player, n)
     if   my_len >= 4: reward += 8.0
     elif my_len == 3: reward += 2.0
+    elif my_len == 2: reward += 0.5
 
-    # 상대 현재 최대 연속 길이 (방치 페널티)
-    opp_max = _board_max_consecutive(board, opp, n)
-    if   opp_max >= 4: reward -= 12.0
-    elif opp_max == 3: reward -=  3.0
+    if opp_move is not None:
+        or_, oc = opp_move
+        opp_len = _max_len(board, or_, oc, opp, n)
+        if   opp_len >= 4: reward -= 12.0
+        elif opp_len == 3: reward -=  3.0
+        elif opp_len == 2: reward -=  0.5
 
     return float(reward)
 
-
-def safe_make_move(env: Engine, move) -> bool:
-    if move is None:
-        return False
-    try:
-        return bool(env.make_move(*move))
-    except Exception:
-        return False
+def safe_make_move(env, move):
+    if move is None: return False
+    try: return bool(env.make_move(*move))
+    except Exception: return False
 
 
-# ──────────────────────────────────────────
-# Champion 평가
-# ──────────────────────────────────────────
-
-def evaluate(challenger: PPOAgent,
-             champ_weights: dict,
-             n_games: int = EVAL_GAMES) -> dict:
+def evaluate(challenger, champ_weights, n_games=EVAL_GAMES):
     assert n_games % 2 == 0
     half  = n_games // 2
     champ = challenger.make_champion_agent(champ_weights)
-
-    # 평가 전 메모리 백업
-    mem_bak = (
-        list(challenger.memory.states),
-        list(challenger.memory.actions),
-        list(challenger.memory.logprobs),
-        list(challenger.memory.values),
-        list(challenger.memory.rewards),
-        list(challenger.memory.dones),
-    )
+    mem_bak = (list(challenger.memory.states), list(challenger.memory.actions),
+               list(challenger.memory.logprobs), list(challenger.memory.values),
+               list(challenger.memory.rewards), list(challenger.memory.dones))
     challenger._eval_mode = True
 
     black_wins = white_wins = 0
     for g in range(n_games):
-        env      = Engine(BOARD_SIZE)
-        env.reset()
+        env = Engine(BOARD_SIZE); env.reset()
         ch_color = 1 if g < half else 2
-        agents   = {ch_color: challenger, 3-ch_color: champ}
-
+        agents = {ch_color: challenger, 3-ch_color: champ}
         step = invalid = 0
         while not env.is_over and step < MAX_HALF_MOVES:
             cur  = env.current_player
-            move = agents[cur].decide_next_move(env)
+            move = agents[cur].decide_best_move(env)
             if not safe_make_move(env, move):
                 invalid += 1
                 if invalid >= MAX_INVALID_MOVES: break
                 continue
-            invalid = 0
-            step   += 1
-
+            invalid = 0; step += 1
         if env.winner == ch_color:
             if ch_color == 1: black_wins += 1
-            else            : white_wins += 1
+            else: white_wins += 1
 
     challenger._eval_mode = False
-    # 메모리 복원
-    (challenger.memory.states,
-     challenger.memory.actions,
-     challenger.memory.logprobs,
-     challenger.memory.values,
-     challenger.memory.rewards,
-     challenger.memory.dones) = mem_bak
-
-    return {
-        'total': (black_wins + white_wins) / n_games,
-        'black': black_wins / half,
-        'white': white_wins / half,
-    }
+    (challenger.memory.states, challenger.memory.actions,
+     challenger.memory.logprobs, challenger.memory.values,
+     challenger.memory.rewards, challenger.memory.dones) = mem_bak
+    return {'total':(black_wins+white_wins)/n_games,
+            'black':black_wins/half, 'white':white_wins/half}
 
 
-# ──────────────────────────────────────────
-# 터미널 출력
-# ──────────────────────────────────────────
-
-def print_stats(ep: int, stats: dict, eval_result: dict | None,
-                phase: str):
+def print_stats(ep, stats, eval_result, phase):
     bar_len  = 30
-    progress = int(ep / TOTAL_EPISODES * bar_len)
-    bar      = '█' * progress + '░' * (bar_len - progress)
-
-    chw  = stats['challenger_wins']
-    cpw  = stats['champion_wins']
-    drw  = stats['draws']
-    tot  = max(chw + cpw + drw, 1)
-    loss = stats.get('loss')
-
+    bar      = '█'*int(ep/TOTAL_EPISODES*bar_len) + '░'*(bar_len-int(ep/TOTAL_EPISODES*bar_len))
+    chw=stats['challenger_wins']; cpw=stats['champion_wins']
+    drw=stats['draws']; tot=max(chw+cpw+drw,1)
+    loss=stats.get('loss')
     print(f'\n{"─"*60}')
-    print(f'  [{phase}]  에피소드 {ep:>7,} / {TOTAL_EPISODES:,}')
-    print(f'  [{bar}] {ep / TOTAL_EPISODES * 100:.1f}%')
-    if isinstance(loss, float):
-        print(f'  스텝: {stats["steps"]:,}   보상: {stats["ep_reward"]:+.2f}'
-              f'   Loss: {loss:.6f}')
+    print(f'  [{phase}]  ep {ep:>8,} / {TOTAL_EPISODES:,}')
+    print(f'  [{bar}] {ep/TOTAL_EPISODES*100:.1f}%')
+    if isinstance(loss,float):
+        print(f'  스텝:{stats["steps"]:,}  보상:{stats["ep_reward"]:+.2f}  Loss:{loss:.6f}')
     else:
-        print(f'  스텝: {stats["steps"]:,}   보상: {stats["ep_reward"]:+.2f}'
-              f'   Loss: —')
-    print(f'  Challenger {"흑" if stats["ch_color"] == 1 else "백"}돌')
-    print(f'  승패  Ch {chw:,}({chw/tot*100:.1f}%)'
-          f'  Opp {cpw:,}({cpw/tot*100:.1f}%)'
-          f'  무 {drw:,}({drw/tot*100:.1f}%)')
-
+        print(f'  스텝:{stats["steps"]:,}  보상:{stats["ep_reward"]:+.2f}  Loss:—')
+    print(f'  {"흑" if stats["ch_color"]==1 else "백"}돌  Ch {chw:,}({chw/tot*100:.1f}%) Opp {cpw:,}({cpw/tot*100:.1f}%) 무 {drw:,}({drw/tot*100:.1f}%)')
     if eval_result:
-        tag = '♛ CHAMPION 갱신!' if stats.get('champion_updated') else '─ 유지'
-        print(f'  ┌ 평가 결과 [{tag}]')
-        print(f'  │  전체: {eval_result["total"]*100:.1f}%'
-              f'  흑돌: {eval_result["black"]*100:.1f}%'
-              f'  백돌: {eval_result["white"]*100:.1f}%')
-        print(f'  └  역대 최고: {stats["best_eval_wr"]*100:.1f}%'
-              f'  총 갱신: {stats["champion_updates"]}회')
+        tag = '♛ 갱신!' if stats.get('champion_updated') else '─ 유지'
+        print(f'  [{tag}] 전체:{eval_result["total"]*100:.1f}% 흑:{eval_result["black"]*100:.1f}% 백:{eval_result["white"]*100:.1f}%')
+        print(f'  역대 최고:{stats["best_eval_wr"]*100:.1f}%  갱신:{stats["champion_updates"]}회')
     print(f'{"─"*60}')
 
 
-# ──────────────────────────────────────────
-# 메인 학습 루프
-# ──────────────────────────────────────────
-
-def train(resume: bool = False):
+def train(resume=False):
     ensure_dirs()
-
     challenger = PPOAgent(BOARD_SIZE, player=2)
-    challenger._eval_mode = False
-
     start_ep = 0
     if resume:
         print('[RESUME] 체크포인트 복사 중...')
@@ -553,106 +286,78 @@ def train(resume: bool = False):
         save_to_drive(0)
 
     champ_weights = challenger.clone_weights()
-    log           = load_log()
-    summ          = log['summary']
+    log  = load_log()
+    summ = log['summary']
     best_eval_wr  = 0.0
-
     heuristic_bot = HeuristicBot()
 
-    stats: dict = {
-        'episode'         : start_ep,
-        'steps'           : 0,
-        'challenger_wins' : summ['challenger_wins'],
-        'champion_wins'   : summ['champion_wins'],
-        'draws'           : summ['draws'],
-        'ep_reward'       : 0.0,
-        'loss'            : None,
-        'eval_win_rate'   : None,
-        'best_eval_wr'    : 0.0,
-        'champion_updated': False,
-        'champion_updates': summ['champion_updates'],
-        'ch_color'        : 1,
+    stats = {
+        'episode':start_ep,'steps':0,
+        'challenger_wins':summ['challenger_wins'],
+        'champion_wins':summ['champion_wins'],
+        'draws':summ['draws'],
+        'ep_reward':0.0,'loss':None,'best_eval_wr':0.0,
+        'champion_updated':False,'champion_updates':summ['champion_updates'],
+        'ch_color':1,
     }
 
-    phase_boundary = HEURISTIC_UNTIL
-    print(f'\n[TRAIN] Curriculum → Self-Play PPO')
-    print(f'  장치           : {challenger.device}')
-    print(f'  시작 에피소드  : {start_ep + 1:,}')
-    print(f'  총 에피소드    : {TOTAL_EPISODES:,}')
-    print(f'  ── Phase 1: ep 1 ~ {phase_boundary:,}  (vs HeuristicBot)')
-    print(f'  ── Phase 2: ep {phase_boundary+1:,} ~ {TOTAL_EPISODES:,}  (Self-Play)')
-    print(f'  평가 주기      : {EVAL_EVERY}ep  ({EVAL_GAMES}판)')
-    print(f'  champion 기준  : 전체 승률 {PROMOTE_WIN_RATE*100:.0f}% 이상 + 역대 최고\n')
+    print(f'\n[TRAIN] Curriculum → Self-Play PPO (4일 T4 최적화)')
+    print(f'  장치: {challenger.device}  시작: {start_ep+1:,}  목표: {TOTAL_EPISODES:,}')
+    print(f'  Phase1: ~ {HEURISTIC_UNTIL:,} (vs HeuristicBot)')
+    print(f'  Phase2: {HEURISTIC_UNTIL+1:,} ~ (Self-Play, 평가 {EVAL_EVERY}ep/{EVAL_GAMES}판)\n')
 
-    last_eval: dict | None = None
+    last_eval = None
 
-    for ep in range(start_ep + 1, TOTAL_EPISODES + 1):
+    for ep in range(start_ep+1, TOTAL_EPISODES+1):
+        use_heuristic = (ep <= HEURISTIC_UNTIL)
+        phase_str     = 'Phase1' if use_heuristic else 'Phase2'
 
-        # ── Phase 결정
-        use_heuristic = (ep <= phase_boundary)
-        phase_str     = 'Phase1 HeuristicBot' if use_heuristic else 'Phase2 SelfPlay'
-
-        # Phase 전환 알림 (딱 한 번)
-        if ep == phase_boundary + 1:
+        if ep == HEURISTIC_UNTIL + 1:
             print(f'\n{"="*60}')
-            print(f'  [전환] Phase 2 시작 — Self-Play (ep {ep:,})')
-            print(f'  champion 가중치를 현재 challenger 와 동기화')
-            print(f'{"="*60}\n')
-            # champion을 현재 challenger 로 리셋해서 셀프플레이 시작
+            print(f'  [전환] Phase 2 Self-Play 시작 (ep {ep:,})')
             champ_weights = challenger.clone_weights()
             save_champion(challenger, episode=ep)
+            print(f'{"="*60}\n')
 
-        ch_color    = 1 if ep % 2 == 1 else 2
+        ch_color    = 1 if ep%2==1 else 2
         champ_color = 3 - ch_color
 
-        # ── 상대 결정
         if use_heuristic:
-            # Phase 1: challenger vs HeuristicBot
-            agents = {
-                ch_color   : challenger,
-                champ_color: heuristic_bot,
-            }
+            agents = {ch_color:challenger, champ_color:heuristic_bot}
         else:
-            # Phase 2: challenger vs champion (Self-Play)
             champ_agent = challenger.make_champion_agent(champ_weights)
-            agents      = {
-                ch_color   : challenger,
-                champ_color: champ_agent,
-            }
+            agents      = {ch_color:challenger, champ_color:champ_agent}
 
-        env = Engine(BOARD_SIZE)
-        env.reset()
+        env = Engine(BOARD_SIZE); env.reset()
         challenger.memory.clear()
+        challenger.reset_episode()          # MCTS 개입용 상태 초기화
+        ep_reward = 0.0; step = 0
+        champion_updated  = False
+        last_opp_move     = None
+        invalid           = 0
 
-        ep_reward        = 0.0
-        step             = 0
-        champion_updated = False
-
-        # ── 한 판 진행
-        invalid = 0
         while not env.is_over and step < MAX_HALF_MOVES:
             cur   = env.current_player
-            agent = agents[cur]
-            move  = agent.decide_next_move(env)
+            move  = agents[cur].decide_next_move(env)
             if not safe_make_move(env, move):
                 invalid += 1
-                if invalid >= MAX_INVALID_MOVES:
-                    break
+                if invalid >= MAX_INVALID_MOVES: break
                 continue
-            invalid = 0
-            step   += 1
+            invalid = 0; step += 1
 
             if cur == ch_color:
-                r = shaped_reward(env, move, ch_color)
+                r = shaped_reward(env, move, last_opp_move, ch_color)
                 ep_reward += r
                 challenger.store_reward(r, env.is_over)
-            elif env.is_over and cur != ch_color:
-                # 상대 마지막 수로 게임 종료 → 패배 보상 전달
-                r = shaped_reward(env, move, ch_color)
-                ep_reward += r
-                challenger.store_reward(r, True)
+                last_opp_move = None
+            else:
+                last_opp_move = move
+                challenger.notify_opp_move(move)  # 상대 수 기록 → MCTS 개입 판단용
+                if env.is_over:
+                    r = shaped_reward(env, move, None, ch_color)
+                    ep_reward += r
+                    challenger.store_reward(r, True)
 
-        # ── 승패 집계
         winner = env.winner
         if winner == ch_color:
             challenger_won = True;  summ['challenger_wins'] += 1
@@ -661,95 +366,58 @@ def train(resume: bool = False):
         else:
             challenger_won = None;  summ['draws']           += 1
 
-        # ── champion 평가 (Phase 2 에서만 의미 있음)
         if ep % EVAL_EVERY == 0 and not use_heuristic:
-            print(f'\n[EVAL] ep {ep:,} — {EVAL_GAMES}판 평가 중...')
-            wr        = evaluate(challenger, champ_weights, EVAL_GAMES)
+            print(f'\n[EVAL] ep {ep:,} — {EVAL_GAMES}판...')
+            wr = evaluate(challenger, champ_weights, EVAL_GAMES)
             last_eval = wr
-            print(f'  전체: {wr["total"]*100:.1f}%'
-                  f'  흑돌: {wr["black"]*100:.1f}%'
-                  f'  백돌: {wr["white"]*100:.1f}%')
-
+            print(f'  전체:{wr["total"]*100:.1f}% 흑:{wr["black"]*100:.1f}% 백:{wr["white"]*100:.1f}%')
             if wr['total'] >= PROMOTE_WIN_RATE and wr['total'] > best_eval_wr:
-                best_eval_wr     = wr['total']
+                best_eval_wr = wr['total']
                 save_champion(challenger, episode=ep)
                 save_to_drive(ep)
                 champ_weights    = challenger.clone_weights()
                 champion_updated = True
                 stats['champion_updates'] += 1
                 summ['champion_updates']  += 1
-                print(f'  [♛] Champion 갱신! (총 {summ["champion_updates"]}회)')
+                print(f'  [♛] Champion 갱신! ({summ["champion_updates"]}회)')
             else:
-                print(f'  [─] 유지  (역대 최고: {best_eval_wr*100:.1f}%)')
-
-            stats['eval_win_rate']    = wr
+                print(f'  [─] 유지 (역대:{best_eval_wr*100:.1f}%)')
             stats['best_eval_wr']     = best_eval_wr
             stats['champion_updated'] = champion_updated
-
-        # Phase 1 에서는 SAVE_EVERY 마다 저장만 (평가 없음)
         elif ep % EVAL_EVERY == 0 and use_heuristic:
-            save_champion(challenger, episode=ep)
-            save_log(log)
+            save_champion(challenger, episode=ep); save_log(log)
 
-        if ep % SAVE_EVERY == 0:
-            save_champion(challenger, episode=ep)
-            save_log(log)
+        if ep % SAVE_EVERY       == 0: save_champion(challenger, episode=ep); save_log(log)
+        if ep % DRIVE_SAVE_EVERY == 0: save_to_drive(ep); save_log(log)
 
-        if ep % DRIVE_SAVE_EVERY == 0:
-            save_to_drive(ep)
-            save_log(log)
-
-        # ── 로그
         record = {
-            'episode'         : ep,
-            'phase'           : phase_str,
-            'ch_color'        : ch_color,
-            'winner'          : int(winner) if winner is not None else 0,
-            'challenger_won'  : challenger_won,
-            'steps'           : step,
-            'ep_reward'       : round(ep_reward, 4),
-            'loss'            : challenger.last_loss,
-            'champion_updated': champion_updated,
-            'timestamp'       : datetime.now().isoformat(timespec='seconds'),
+            'episode':ep,'phase':phase_str,'ch_color':ch_color,
+            'winner':int(winner) if winner is not None else 0,
+            'challenger_won':challenger_won,'steps':step,
+            'ep_reward':round(ep_reward,4),'loss':challenger.last_loss,
+            'champion_updated':champion_updated,
+            'timestamp':datetime.now().isoformat(timespec='seconds'),
         }
         append_log(log, record)
+        stats.update({'episode':ep,'steps':step,'ep_reward':ep_reward,
+                      'challenger_wins':summ['challenger_wins'],
+                      'champion_wins':summ['champion_wins'],
+                      'draws':summ['draws'],'loss':challenger.last_loss,
+                      'ch_color':ch_color})
 
-        stats.update({
-            'episode'        : ep,
-            'steps'          : step,
-            'ep_reward'      : ep_reward,
-            'challenger_wins': summ['challenger_wins'],
-            'champion_wins'  : summ['champion_wins'],
-            'draws'          : summ['draws'],
-            'loss'           : challenger.last_loss,
-            'ch_color'       : ch_color,
-        })
-
-        if ep % 100 == 0:
-            print_stats(ep, stats,
-                        last_eval if ep % EVAL_EVERY == 0 else None,
-                        phase_str)
+        if ep % 200 == 0:
+            print_stats(ep, stats, last_eval if ep%EVAL_EVERY==0 else None, phase_str)
             last_eval = None
 
     save_champion(challenger, episode=ep)
     save_to_drive(ep)
     save_log(log)
-    print('\n[DONE] 학습 종료 — 최종 저장 완료')
-
-
-# ──────────────────────────────────────────
-# CLI
-# ──────────────────────────────────────────
+    print('\n[DONE] 학습 종료')
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='오목 Curriculum→Self-Play PPO')
-    parser.add_argument('--resume', action='store_true',
-                        help='체크포인트를 불러와 이어서 학습')
-    parser.add_argument('--export', action='store_true',
-                        help='ZIP 내보내기만 실행')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--export', action='store_true')
     args = parser.parse_args()
-
-    if args.export:
-        export_zip()
-    else:
-        train(resume=args.resume)
+    if args.export: export_zip()
+    else: train(resume=args.resume)
