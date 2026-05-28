@@ -34,17 +34,20 @@ class PPOAgent:
     GAMMA        = 0.99
     GAE_LAMBDA   = 0.95
     CLIP_EPS     = 0.2
-    ENTROPY_C    = 0.005   # 낮춰서 탐색보다 수렴 우선
+    ENTROPY_C    = 0.005
     VALUE_C      = 0.5
     EPOCHS       = 4
-    BATCH_SIZE   = 64      # 16 → 64: 더 안정적인 그래디언트
-    TRAIN_EVERY  = 1       # 5 → 1: 매판 학습하여 빠른 피드백
-    REWARD_SCALE = 0.05    # 0.02 → 0.05: 신호 강화
+    BATCH_SIZE   = 64
+    TRAIN_EVERY  = 1
+    REWARD_SCALE = 0.05
+
+    # 후보 칸 탐색 반경
+    NEIGHBOR_RADIUS = 2
 
     def __init__(self, board_size: int = 15, player: int = 2):
         self.board_size   = board_size
         self.player       = player
-        self._eval_mode   = False   # True 이면 메모리에 저장 안 함
+        self._eval_mode   = False
         self.device       = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -75,12 +78,15 @@ class PPOAgent:
 
         board_np  = engine.board.board
         cur       = engine.current_player
-        mask_flat = self._build_mask(board_np, cur)
+
+        # 후보 마스크 + 거리 가중치
+        mask_flat, dist_weight = self._build_mask(board_np, cur)
 
         if not mask_flat.any():
             return None
 
-        probs = probs * mask_flat.float()
+        # 정책 확률 × 거리 가중치 → 가까운 곳에 높은 확률 부여
+        probs = probs * mask_flat.float() * dist_weight
         s     = probs.sum()
         probs = probs / s if s > 0 \
             else mask_flat.float() / mask_flat.float().sum()
@@ -88,7 +94,6 @@ class PPOAgent:
         dist   = Categorical(probs)
         action = dist.sample()
 
-        # 평가 모드일 때는 메모리에 쌓지 않음
         if not self._eval_mode:
             self.memory.states.append(state)
             self.memory.actions.append(action.item())
@@ -99,31 +104,69 @@ class PPOAgent:
         return (row, col)
 
     def _build_mask(self, board_np: np.ndarray,
-                    player: int) -> torch.Tensor:
-        n    = self.board_size
-        mask = (board_np == 0).flatten()
-        if player == 1:
-            candidate_mask = np.zeros(n * n, dtype=bool)
-            occupied = np.argwhere(board_np != 0)
-            if len(occupied) == 0:
-                center = n // 2
-                candidate_mask[center * n + center] = True
-            else:
-                for or_, oc in occupied:
-                    for dr in range(-2, 3):
-                        for dc in range(-2, 3):
-                            nr, nc = or_ + dr, oc + dc
-                            if 0 <= nr < n and 0 <= nc < n \
-                                    and board_np[nr, nc] == 0:
-                                candidate_mask[nr * n + nc] = True
-            mask = mask & candidate_mask
-            cand_idx = np.where(mask)[0]
-            for idx in cand_idx:
-                r, c = divmod(int(idx), n)
-                if Rules.is_forbidden(board_np, r, c, 1):
-                    mask[idx] = False
+                    player: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        착수 후보 마스크 + 거리 가중치 반환.
 
-        return torch.tensor(mask, dtype=torch.bool, device=self.device)
+        - 흑·백 모두 기존 돌 주변 NEIGHBOR_RADIUS 칸 이내만 후보
+        - 가중치: 가까울수록 높음 (체비쇼프 거리 기준 1/dist)
+        - 흑돌은 추가로 금수 필터 적용
+        - 보드가 비어 있으면 중앙만 후보
+
+        Returns
+        -------
+        mask        : (n*n,) bool tensor
+        dist_weight : (n*n,) float tensor (정규화됨)
+        """
+        n        = self.board_size
+        mask     = (board_np == 0).flatten()
+        weight   = np.zeros(n * n, dtype=np.float32)
+        occupied = np.argwhere(board_np != 0)
+
+        if len(occupied) == 0:
+            # 보드가 비어 있으면 중앙만 후보
+            center      = n // 2
+            idx         = center * n + center
+            mask        = np.zeros(n * n, dtype=bool)
+            mask[idx]   = True
+            weight[idx] = 1.0
+        else:
+            candidate_mask = np.zeros(n * n, dtype=bool)
+            r_rad          = self.NEIGHBOR_RADIUS
+
+            for or_, oc in occupied:
+                for dr in range(-r_rad, r_rad + 1):
+                    for dc in range(-r_rad, r_rad + 1):
+                        nr, nc = int(or_) + dr, int(oc) + dc
+                        if (0 <= nr < n and 0 <= nc < n
+                                and board_np[nr, nc] == 0):
+                            idx            = nr * n + nc
+                            candidate_mask[idx] = True
+                            # 체비쇼프 거리: 가까울수록 가중치 높음
+                            d = max(abs(dr), abs(dc))   # d >= 1 보장
+                            w = 1.0 / d
+                            if w > weight[idx]:
+                                weight[idx] = w
+
+            mask = mask & candidate_mask
+
+            # 흑돌 금수 필터
+            if player == 1:
+                for idx in np.where(mask)[0]:
+                    r, c = divmod(int(idx), n)
+                    if Rules.is_forbidden(board_np, r, c, 1):
+                        mask[idx]   = False
+                        weight[idx] = 0.0
+
+        # 가중치 정규화 (마스크 밖은 0)
+        weight = weight * mask.astype(np.float32)
+        w_sum  = weight.sum()
+        if w_sum > 0:
+            weight /= w_sum
+
+        mask_t   = torch.tensor(mask,   dtype=torch.bool,   device=self.device)
+        weight_t = torch.tensor(weight, dtype=torch.float32, device=self.device)
+        return mask_t, weight_t
 
     # ── 보상 저장 + 학습 트리거
     def store_reward(self, reward: float, done: bool = False):

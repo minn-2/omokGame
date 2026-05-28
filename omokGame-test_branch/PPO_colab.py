@@ -42,15 +42,19 @@ HEURISTIC_UNTIL  = 150000   # 15만 번까지 휴리스틱 봇
 
 class HeuristicBot:
     """
-    규칙 기반 오목 봇.
+    강화된 규칙 기반 오목 봇.
     우선순위:
       1. 내 5목 완성
       2. 상대 5목 차단
-      3. 내 열린 4목(공격)
+      3. 내 열린 4목 (즉시 승리)
       4. 상대 열린 4목 차단
-      5. 내 열린 3목
-      6. 상대 열린 3목 차단
-      7. 중앙 근처 랜덤
+      5. 내 사삼(4+3) 이중 위협
+      6. 상대 사삼 차단
+      7. 내 쌍삼(3+3) 이중 위협
+      8. 상대 쌍삼 차단
+      9. 내 3목 연결
+      10. 상대 3목 차단
+      11. 중앙 가중 랜덤
     """
 
     def decide_next_move(self, engine) -> tuple[int, int] | None:
@@ -59,12 +63,10 @@ class HeuristicBot:
         opp    = 3 - player
         n      = engine.board_size
 
-        # 착수 가능한 칸 (기존 돌 주변 2칸 이내)
         candidates = self._candidates(board, n)
         if not candidates:
             return None
 
-        # 흑돌 금수 필터
         if player == 1:
             candidates = [
                 (r, c) for r, c in candidates
@@ -73,23 +75,40 @@ class HeuristicBot:
         if not candidates:
             return None
 
-        # 우선순위 순으로 탐색
-        for length, target in [
-            (5, player),   # 내 5목
-            (5, opp),      # 상대 5목 차단
-            (4, player),   # 내 4목
-            (4, opp),      # 상대 4목 차단
-            (3, player),   # 내 3목
-            (3, opp),      # 상대 3목 차단
-        ]:
-            move = self._find_threat(board, candidates, target, length, n)
-            if move:
-                return move
-
-        # fallback: 중앙 가중 랜덤
+        # 1. 내 5목
+        m = self._find_n(board, candidates, player, 5, n)
+        if m: return m
+        # 2. 상대 5목 차단
+        m = self._find_n(board, candidates, opp, 5, n)
+        if m: return m
+        # 3. 내 열린 4목
+        m = self._find_open_four(board, candidates, player, n)
+        if m: return m
+        # 4. 상대 열린 4목 차단
+        m = self._find_open_four(board, candidates, opp, n)
+        if m: return m
+        # 5. 내 사삼(4+3) 이중 위협
+        m = self._find_double_threat(board, candidates, player, n, 4, 3)
+        if m: return m
+        # 6. 상대 사삼 차단
+        m = self._find_double_threat(board, candidates, opp, n, 4, 3)
+        if m: return m
+        # 7. 내 쌍삼(3+3) 이중 위협
+        m = self._find_double_threat(board, candidates, player, n, 3, 3)
+        if m: return m
+        # 8. 상대 쌍삼 차단
+        m = self._find_double_threat(board, candidates, opp, n, 3, 3)
+        if m: return m
+        # 9. 내 3목
+        m = self._find_n(board, candidates, player, 3, n)
+        if m: return m
+        # 10. 상대 3목 차단
+        m = self._find_n(board, candidates, opp, 3, n)
+        if m: return m
+        # 11. fallback
         return self._weighted_random(candidates, n)
 
-    # 빈 칸 중 기존 돌 주변 2칸 이내 후보 수집
+    # ── 후보 칸 수집
     def _candidates(self, board, n) -> list[tuple[int, int]]:
         occupied = np.argwhere(board != 0)
         if len(occupied) == 0:
@@ -106,21 +125,86 @@ class HeuristicBot:
                         seen.add((nr, nc))
         return list(seen)
 
-    # 놓았을 때 length 이상 연속이 되는 칸 탐색
-    def _find_threat(self, board, candidates,
-                     player, length, n) -> tuple[int, int] | None:
-        best      = None
+    # ── length 이상 연속이 되는 칸 탐색
+    def _find_n(self, board, candidates, player,
+                length, n) -> tuple[int, int] | None:
         best_score = -1
+        best       = None
         for r, c in candidates:
             board[r, c] = player
-            score = self._max_consecutive(board, r, c, player, n)
+            score = self._max_consec(board, r, c, player, n)
             board[r, c] = 0
             if score >= length and score > best_score:
                 best_score = score
                 best       = (r, c)
         return best
 
-    def _max_consecutive(self, board, r, c, player, n) -> int:
+    # ── 열린 4목: 놓았을 때 양쪽이 열린 4연속
+    def _find_open_four(self, board, candidates, player,
+                        n) -> tuple[int, int] | None:
+        for r, c in candidates:
+            board[r, c] = player
+            found = self._has_open_four(board, r, c, player, n)
+            board[r, c] = 0
+            if found:
+                return (r, c)
+        return None
+
+    def _has_open_four(self, board, r, c, player, n) -> bool:
+        for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
+            cnt  = 1
+            ends = [False, False]
+            for si, sign in enumerate((1, -1)):
+                nr, nc = r + dr*sign, c + dc*sign
+                while (0 <= nr < n and 0 <= nc < n
+                       and board[nr, nc] == player):
+                    cnt += 1
+                    nr  += dr * sign
+                    nc  += dc * sign
+                if (0 <= nr < n and 0 <= nc < n
+                        and board[nr, nc] == 0):
+                    ends[si] = True
+            if cnt >= 4 and all(ends):
+                return True
+        return False
+
+    # ── 이중 위협: 한 칸에 놓았을 때 need_a + need_b 라인 동시 생성
+    def _find_double_threat(self, board, candidates, player,
+                             n, need_a, need_b) -> tuple[int, int] | None:
+        for r, c in candidates:
+            board[r, c] = player
+            threats = self._count_threat_lines(board, r, c, player,
+                                               n, need_a, need_b)
+            board[r, c] = 0
+            if threats >= 2:
+                return (r, c)
+        return None
+
+    def _count_threat_lines(self, board, r, c, player,
+                             n, need_a, need_b) -> int:
+        """4방향에서 열린 need_a 또는 열린 need_b 라인 수 반환."""
+        count = 0
+        for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
+            cnt       = 1
+            open_ends = 0
+            for sign in (1, -1):
+                nr, nc = r + dr*sign, c + dc*sign
+                while (0 <= nr < n and 0 <= nc < n
+                       and board[nr, nc] == player):
+                    cnt += 1
+                    nr  += dr * sign
+                    nc  += dc * sign
+                if (0 <= nr < n and 0 <= nc < n
+                        and board[nr, nc] == 0):
+                    open_ends += 1
+            if cnt >= need_a and open_ends >= 1:
+                count += 1
+            elif cnt >= need_b and open_ends >= 2:
+                count += 1
+        return count
+
+    # ── 4방향 최대 연속 길이
+    def _max_consec(self, board, r, c, player, n) -> int:
         best = 1
         for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
             cnt = 1
@@ -134,19 +218,20 @@ class HeuristicBot:
             best = max(best, cnt)
         return best
 
-    # 중앙에 가까울수록 높은 가중치로 랜덤 선택
+    # ── 중앙 가중 랜덤
     def _weighted_random(self, candidates,
-                         n) -> tuple[int, int] | None:
+                          n) -> tuple[int, int] | None:
         if not candidates:
             return None
-        center = n // 2
+        center  = n // 2
         weights = [
             1.0 / (abs(r - center) + abs(c - center) + 1)
             for r, c in candidates
         ]
-        total = sum(weights)
+        total   = sum(weights)
         weights = [w / total for w in weights]
-        idx = random.choices(range(len(candidates)), weights=weights, k=1)[0]
+        idx     = random.choices(range(len(candidates)),
+                                 weights=weights, k=1)[0]
         return candidates[idx]
 
 
