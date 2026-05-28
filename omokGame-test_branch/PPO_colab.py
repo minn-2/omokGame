@@ -21,7 +21,7 @@ KAGGLE_OUT    = Path('/kaggle/working')
 
 # ── 학습 설정
 BOARD_SIZE       = 15
-TOTAL_EPISODES   = 500000
+TOTAL_EPISODES   = 100000
 SAVE_EVERY       = 200
 DRIVE_SAVE_EVERY = 1000
 EVAL_EVERY       = 500
@@ -33,7 +33,7 @@ MAX_INVALID_MOVES = 8
 # ── 커리큘럼 설정
 # HEURISTIC_UNTIL 에피소드까지는 HeuristicBot 과 대결,
 # 이후 셀프플레이로 자동 전환
-HEURISTIC_UNTIL  = 150000   # 15만 번까지 휴리스틱 봇
+HEURISTIC_UNTIL  = 300000   # 15만 번까지 휴리스틱 봇
 
 
 # ──────────────────────────────────────────
