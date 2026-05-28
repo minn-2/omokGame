@@ -256,13 +256,14 @@ class Play:
         self.last_move    = None
         self.ai_pending   = False
 
-        # AI 에이전트 생성 및 가중치 로드
-        self.agent = PPOAgent(BOARD_SIZE, player=2)  # AI = 백돌(2) 고정
-        if CKPT_PATH.exists():
-            self.agent.load(str(CKPT_PATH))
-            print(f'[AI] 체크포인트 로드 완료 ← {CKPT_PATH}')
+        # 체크포인트 로드
+        if self.ckpt_exists:
+            self.agent = PPOAgent(BOARD_SIZE)
+            self.agent.load(CKPT_PATH)
+            print(f"[정보] 체크포인트 로드 완료: {CKPT_PATH}")
         else:
-            print(f'[AI] 체크포인트 없음 — 랜덤 가중치로 시작')
+            self.agent = None
+            print(f"[경고] 체크포인트 없음: {CKPT_PATH} — AI가 착수하지 않습니다.")
 
         self.screen_state = 'game'
         self._build_game_buttons()
@@ -285,13 +286,12 @@ class Play:
         self.btn_human.draw(self.screen)
         self.btn_ai.draw(self.screen)
 
-        # AI 모델 로드 상태 표시
-        if self.ckpt_exists:
-            status = self.font_small.render('✓ AI 모델 로드됨', True, GREEN_COLOR)
-        else:
-            status = self.font_small.render('⚠ AI 모델 없음 (랜덤)', True, RED_COLOR)
-        self.screen.blit(status,
-            (WIN_W // 2 - status.get_width() // 2, 400))
+        # 체크포인트 없을 때 경고 문구 표시
+        if not self.ckpt_exists:
+            warn = self.font_small.render(
+                f'※ AI 모델 없음 ({CKPT_PATH})', True, RED_COLOR)
+            self.screen.blit(warn,
+                (WIN_W // 2 - warn.get_width() // 2, 406))
 
     # 게임 화면
     def _draw_game(self):
@@ -363,15 +363,6 @@ class Play:
         pygame.draw.line(self.screen, GRAY_COLOR,
             (px + 20, 64), (px + PANEL_W - 20, 64), 1)
 
-        # 흑/백 역할 표시
-        role_b = self.font_small.render('● 흑돌 — 인간', True, GRAY_COLOR)
-        role_w = self.font_small.render('○ 백돌 — AI',   True, GRAY_COLOR)
-        self.screen.blit(role_b, (px + 20, 76))
-        self.screen.blit(role_w, (px + 20, 96))
-
-        pygame.draw.line(self.screen, GRAY_COLOR,
-            (px + 20, 120), (px + PANEL_W - 20, 120), 1)
-
         sub = self.font_small.render('현재 차례', True, GRAY_COLOR)
         self.screen.blit(sub,
             (px + PANEL_W // 2 - sub.get_width() // 2, 130))
@@ -405,16 +396,13 @@ class Play:
             self.screen.blit(wait,
                 (px + PANEL_W // 2 - wait.get_width() // 2, 240))
 
-        # 체크포인트 로드 상태
-        if self.mode == 'ai':
-            ckpt_color = GREEN_COLOR if self.ckpt_exists else RED_COLOR
-            ckpt_text  = '모델 로드됨' if self.ckpt_exists else '랜덤 가중치'
-            ckpt_lbl = self.font_small.render(ckpt_text, True, ckpt_color)
-            self.screen.blit(ckpt_lbl,
-                (px + PANEL_W // 2 - ckpt_lbl.get_width() // 2, 265))
+        # 체크포인트 없을 때 패널에도 경고 표시
+        if self.mode == 'ai' and not self.ckpt_exists:
+            warn = self.font_small.render('AI 모델 없음', True, RED_COLOR)
+            self.screen.blit(warn,
+                (px + PANEL_W // 2 - warn.get_width() // 2, 265))
 
         self.btn_home.draw(self.screen)
-
 
 if __name__ == '__main__':
     Play().run()

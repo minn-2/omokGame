@@ -173,22 +173,23 @@ def export_zip(out_dir: str = '.') -> str:
 def shaped_reward(engine: Engine, player: int) -> float:
     """
     승패 보상 + 패턴 기반 중간 보상.
-    - 승리: +50 / 패배: -50
-    - 4목 형성: +8 / 상대 4목: -15
-    - 3목 형성: +3 / 상대 3목: -5
+    - 승리: +50 / 패배: -45
+    - 4목 형성: +8 / 상대 4목: -10
+    - 3목 형성: +4 / 상대 3목: -3
+    - 진행 중 생존 보너스: +0.2
     agent.store_reward() 에서 REWARD_SCALE(0.02) 로 스케일 조정됨.
     """
     board = engine.board.board
     opp   = 3 - player
     if engine.is_over:
         if engine.winner == player: return  50.0
-        if engine.winner == opp   : return -50.0
+        if engine.winner == opp   : return -45.0
         return 0.0
-    r = 0.0
+    r = 0.2
     if Rules.check_patterns(board, player, 4): r += 8.0
-    if Rules.check_patterns(board, opp,    4): r -= 15.0
-    if Rules.check_patterns(board, player, 3): r += 3.0
-    if Rules.check_patterns(board, opp,    3): r -= 5.0
+    if Rules.check_patterns(board, opp,    4): r -= 10.0
+    if Rules.check_patterns(board, player, 3): r += 4.0
+    if Rules.check_patterns(board, opp,    3): r -= 3.0
     return float(r)
 
 

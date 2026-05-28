@@ -37,8 +37,8 @@ class PPOAgent:
     ENTROPY_C   = 0.02    # 0.01 → 0.02: 탐색 강화
     VALUE_C     = 0.5
     EPOCHS      = 4
-    BATCH_SIZE  = 32
-    TRAIN_EVERY = 10      # 10판마다 한 번 학습 (데이터 축적)
+    BATCH_SIZE  = 16
+    TRAIN_EVERY = 5       # 5판마다 학습하여 초기 loss 피드백을 빠르게 받음
     REWARD_SCALE = 0.02   # 보상 스케일 (50 * 0.02 = 1.0, Tanh 범위에 맞춤)
 
     def __init__(self, board_size: int = 15, player: int = 2):
@@ -97,13 +97,31 @@ class PPOAgent:
 
     def _build_mask(self, board_np: np.ndarray,
                     player: int) -> torch.Tensor:
+        # 속도 최적화:
+        # 흑 금수 검사를 보드 전체 빈칸에 수행하면 매우 느리므로,
+        # 기존 돌 주변 후보 칸만 대상으로 금수 검사를 수행한다.
+        n = self.board_size
         mask = (board_np == 0).flatten()
         if player == 1:
-            for idx in range(len(mask)):
-                if mask[idx]:
-                    r, c = divmod(idx, self.board_size)
-                    if Rules.is_forbidden(board_np, r, c, 1):
-                        mask[idx] = False
+            candidate_mask = np.zeros(n * n, dtype=bool)
+            occupied = np.argwhere(board_np != 0)
+            if len(occupied) == 0:
+                center = n // 2
+                candidate_mask[center * n + center] = True
+            else:
+                for or_, oc in occupied:
+                    for dr in range(-2, 3):
+                        for dc in range(-2, 3):
+                            nr, nc = or_ + dr, oc + dc
+                            if 0 <= nr < n and 0 <= nc < n and board_np[nr, nc] == 0:
+                                candidate_mask[nr * n + nc] = True
+
+            mask = mask & candidate_mask
+            cand_idx = np.where(mask)[0]
+            for idx in cand_idx:
+                r, c = divmod(int(idx), n)
+                if Rules.is_forbidden(board_np, r, c, 1):
+                    mask[idx] = False
         return torch.tensor(mask, dtype=torch.bool, device=self.device)
 
     # ── 보상 저장 + 학습 트리거
