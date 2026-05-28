@@ -23,9 +23,9 @@ LOG_PATH = CKPT_DIR / 'train_log.json'
 BOARD_SIZE       = 15
 TOTAL_EPISODES   = 1000000
 SAVE_EVERY       = 200
-EVAL_EVERY       = 500      # N 에피소드마다 champion 평가
-EVAL_GAMES       = 30       # 평가 대결 수
-PROMOTE_WIN_RATE = 0.55     # 이 이상이면 champion 갱신
+EVAL_EVERY       = 500
+EVAL_GAMES       = 30
+PROMOTE_WIN_RATE = 0.55
 
 # Pygame UI
 CELL     = 30
@@ -49,7 +49,8 @@ C_GREEN     = ( 80, 220, 120)
 C_YELLOW    = (240, 200,  60)
 C_BLUE      = ( 80, 160, 255)
 
-# 파일 유틸
+
+# ── 파일 유틸 ──────────────────────────────────────────────
 def ensure_dirs():
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -59,7 +60,7 @@ def save_champion(agent: PPOAgent, episode: int = 0):
     torch.save({
         'net'      : agent.net.state_dict(),
         'optimizer': agent.optimizer.state_dict(),
-        'episode'  : episode,   # ← 에피소드 번호 저장
+        'episode'  : episode,
     }, P2_PATH)
     print(f'  [♛ CHAMPION] ppo_p2.pt 갱신! (ep {episode:,})')
 
@@ -70,7 +71,7 @@ def load_champion(agent: PPOAgent) -> int:
         agent.net.load_state_dict(ckpt['net'])
         agent.old_net.load_state_dict(ckpt['net'])
         agent.optimizer.load_state_dict(ckpt['optimizer'])
-        ep = ckpt.get('episode', 0)   # ← 에피소드 번호 복원 (구버전 호환)
+        ep = ckpt.get('episode', 0)
         print(f'  [LOAD] champion ← {P2_PATH} (ep {ep:,})')
         return ep
     else:
@@ -120,7 +121,6 @@ def save_log(log: dict):
 
 
 def export_zip(out_dir: str = '.') -> str:
-    """ppo_p2.pt + train_log.json → ZIP."""
     ensure_dirs()
     ts  = datetime.now().strftime('%Y%m%d_%H%M%S')
     zp  = Path(out_dir) / f'omok_p2_{ts}.zip'
@@ -147,38 +147,93 @@ def import_zip(zip_path: str) -> bool:
     print(f'[IMPORT] 완료 ← {zp}')
     return True
 
-# 보상
-def shaped_reward(engine: Engine, player: int) -> float:
+
+# ── 보상 (착수 후 보드 기준) ──────────────────────────────
+def shaped_reward(engine: Engine, move: tuple[int, int],
+                  player: int) -> float:
+    """make_move() 직후 호출. move = 방금 놓은 (row, col)."""
     board = engine.board.board
     opp   = 3 - player
-    if engine.is_over:
-        if engine.winner == player : return  50.0
-        if engine.winner == opp    : return -50.0
-        return 0.0
-    r = 0.0
-    if Rules.check_patterns(board, player, 4): r += 8.0
-    if Rules.check_patterns(board, opp,    4): r -= 15.0
-    if Rules.check_patterns(board, player, 3): r += 3.0
-    if Rules.check_patterns(board, opp,    3): r -= 5.0
-    return float(r)
 
-# Champion 평가
+    # 게임 종료
+    if engine.is_over:
+        if engine.winner == player: return  50.0
+        if engine.winner == opp   : return -50.0
+        return 0.0
+
+    r, c = move
+    reward = 0.0
+
+    # ── 내 연속 길이 보상 (방금 놓은 돌 기준)
+    my_len = _max_consecutive(board, r, c, player)
+    if   my_len >= 4: reward += 8.0    # 4목 (열린/막힌 모두)
+    elif my_len == 3: reward += 2.0    # 3목
+
+    # ── 상대 위협 차단 보상
+    #    방금 내가 놓기 전에 상대가 몇 목이었는지 역산 불가하므로,
+    #    현재 보드에서 상대 최대 연속을 체크
+    opp_len = _board_max_consecutive(board, opp)
+    if   opp_len >= 4: reward -= 12.0  # 상대 4목 방치 페널티
+    elif opp_len == 3: reward -=  3.0  # 상대 3목 방치 페널티
+
+    return float(reward)
+
+
+def _max_consecutive(board: np.ndarray,
+                     r: int, c: int, player: int) -> int:
+    """(r,c) 돌을 포함한 4방향 최대 연속 길이."""
+    n = len(board)
+    best = 1
+    for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
+        cnt = 1
+        for sign in (1, -1):
+            nr, nc = r + dr*sign, c + dc*sign
+            while 0 <= nr < n and 0 <= nc < n and board[nr, nc] == player:
+                cnt += 1
+                nr  += dr * sign
+                nc  += dc * sign
+        best = max(best, cnt)
+    return best
+
+
+def _board_max_consecutive(board: np.ndarray, player: int) -> int:
+    """보드 전체에서 player 의 최대 연속 길이."""
+    n    = len(board)
+    best = 0
+    for r in range(n):
+        for c in range(n):
+            if board[r, c] == player:
+                v = _max_consecutive(board, r, c, player)
+                if v > best:
+                    best = v
+    return best
+
+
+# ── Champion 평가 ─────────────────────────────────────────
 def evaluate(challenger: PPOAgent,
              champ_weights: dict,
              n_games: int = EVAL_GAMES) -> float:
-    champ = challenger.make_champion_agent(champ_weights)
-    ch_wins = 0
+    """평가 중 challenger 메모리를 건드리지 않는다."""
+    champ    = challenger.make_champion_agent(champ_weights)
+    ch_wins  = 0
+    mem_bak  = (
+        list(challenger.memory.states),
+        list(challenger.memory.actions),
+        list(challenger.memory.logprobs),
+        list(challenger.memory.values),
+        list(challenger.memory.rewards),
+        list(challenger.memory.dones),
+    )
 
     for g in range(n_games):
         env = Engine(BOARD_SIZE)
         env.reset()
 
-        if g % 2 == 0:
-            ch_color   = 1
-            agents     = {1: challenger, 2: champ}
-        else:
-            ch_color   = 2
-            agents     = {1: champ, 2: challenger}
+        ch_color = 1 if g % 2 == 0 else 2
+        agents   = {ch_color: challenger, 3-ch_color: champ}
+
+        # 평가 중 메모리 쌓이지 않도록 임시 플래그
+        challenger._eval_mode = True
 
         while not env.is_over:
             cur  = env.current_player
@@ -187,13 +242,23 @@ def evaluate(challenger: PPOAgent,
                 break
             env.make_move(*move)
 
+        challenger._eval_mode = False
+
         if env.winner == ch_color:
             ch_wins += 1
 
-    challenger.memory.clear()
+    # 평가 중 쌓인 메모리 버리고 원래 메모리 복원
+    (challenger.memory.states,
+     challenger.memory.actions,
+     challenger.memory.logprobs,
+     challenger.memory.values,
+     challenger.memory.rewards,
+     challenger.memory.dones) = mem_bak
+
     return ch_wins / n_games
 
-# Pygame 대시보드
+
+# ── Pygame 대시보드 ───────────────────────────────────────
 class Dashboard:
     MAX_HIST = 200
 
@@ -206,8 +271,7 @@ class Dashboard:
         self.fS    = pygame.font.SysFont('malgungothic', 12)
         self.clock = pygame.time.Clock()
 
-        self.hist_win_rate = deque(maxlen=self.MAX_HIST)
-        self.hist_eval_wr  = deque(maxlen=self.MAX_HIST)
+        self.hist_eval_wr = deque(maxlen=self.MAX_HIST)
 
     def handle_events(self) -> tuple[bool, bool, bool]:
         quit_f = save_f = export_f = False
@@ -230,14 +294,12 @@ class Dashboard:
 
     def _draw_board(self, engine: Engine, stats: dict):
         pygame.draw.rect(self.screen, C_BOARD, (0, 0, BOARD_PX, WIN_H))
-
         for i in range(BOARD_SIZE):
             x = MARGIN + i * CELL
             pygame.draw.line(self.screen, C_LINE,
                 (x, MARGIN), (x, MARGIN+(BOARD_SIZE-1)*CELL), 1)
             pygame.draw.line(self.screen, C_LINE,
                 (MARGIN, x), (MARGIN+(BOARD_SIZE-1)*CELL, x), 1)
-
         for p in [3, 7, 11]:
             for q in [3, 7, 11]:
                 pygame.draw.circle(self.screen, C_LINE,
@@ -258,7 +320,7 @@ class Dashboard:
                         self.screen, C_LINE, (cx, cy), 12, 1)
 
         ch_color = stats.get('ch_color', '?')
-        label    = self.fS.render(
+        label = self.fS.render(
             f'Challenger = {"흑돌" if ch_color == 1 else "백돌"}',
             True, C_ACCENT)
         self.screen.blit(label, (MARGIN, WIN_H - 20))
@@ -307,7 +369,7 @@ class Dashboard:
             tag   = '♛ champion 갱신!' if s.get('champion_updated') else '유지'
             txt(f'평가 승률  {wr*100:.1f}%  ({tag})', color, self.fM)
         else:
-            pct = (ep % EVAL_EVERY) / EVAL_EVERY * 100
+            pct = (ep % EVAL_EVERY) / max(EVAL_EVERY, 1) * 100
             txt(f'다음 평가까지  {EVAL_EVERY - ep % EVAL_EVERY}ep  ({pct:.0f}%)',
                 C_GRAY)
         txt(f'총 champion 갱신  {s.get("champion_updates", 0)}회', C_BLUE)
@@ -352,22 +414,22 @@ class Dashboard:
         mn, mx = 0.0, 1.0
         rng    = mx - mn
         xs  = [x + int(i/(len(pts)-1)*(w-2))+1 for i in range(len(pts))]
-        ys  = [y + h - 2 - int((v-mn)/rng*(h-14))  for v in pts]
+        ys  = [y + h - 2 - int((v-mn)/rng*(h-14)) for v in pts]
         pygame.draw.lines(self.screen, color, False, list(zip(xs, ys)), 1)
 
-# 메인 학습 루프
+
+# ── 메인 학습 루프 ────────────────────────────────────────
 def train(resume: bool = False):
     ensure_dirs()
 
-    # ── 에이전트 생성
     challenger = PPOAgent(BOARD_SIZE, player=2)
+    challenger._eval_mode = False  # 평가 모드 플래그 초기화
 
-    start_ep = 0  # ← 시작 에피소드 번호
+    start_ep = 0
     if resume:
         print('[RESUME] 체크포인트 불러오는 중...')
-        start_ep = load_champion(challenger)  # ← 에피소드 번호 복원
+        start_ep = load_champion(challenger)
 
-    # 첫 실행이면 랜덤 가중치를 champion 으로 저장
     if not P2_PATH.exists():
         save_champion(challenger, episode=0)
 
@@ -380,7 +442,7 @@ def train(resume: bool = False):
     env  = Engine(BOARD_SIZE)
 
     stats: dict = {
-        'episode'          : start_ep,  # ← 복원된 번호로 초기화
+        'episode'          : start_ep,
         'steps'            : 0,
         'challenger_wins'  : summ['challenger_wins'],
         'champion_wins'    : summ['champion_wins'],
@@ -395,10 +457,9 @@ def train(resume: bool = False):
 
     print(f'[TRAIN] Self-Play PPO 시작 — {TOTAL_EPISODES:,} 에피소드')
     print(f'        장치: {challenger.device}')
-    print(f'        시작 에피소드: {start_ep + 1:,}')  # ← 시작 번호 출력
-    print(f'        방식: Challenger vs Champion (Self-Play Curriculum)')
+    print(f'        시작 에피소드: {start_ep + 1:,}')
 
-    for ep in range(start_ep + 1, TOTAL_EPISODES + 1):  # ← start_ep 이후부터 시작
+    for ep in range(start_ep + 1, TOTAL_EPISODES + 1):
 
         ch_color    = 1 if ep % 2 == 1 else 2
         champ_color = 3 - ch_color
@@ -422,7 +483,8 @@ def train(resume: bool = False):
             step += 1
 
             if cur == ch_color:
-                r = shaped_reward(env, ch_color)
+                # ── 핵심: make_move 이후 보드 기준으로 보상 계산
+                r = shaped_reward(env, move, ch_color)
                 ep_reward += r
                 challenger.store_reward(r, env.is_over)
 
@@ -444,7 +506,7 @@ def train(resume: bool = False):
                   f'(기준 {PROMOTE_WIN_RATE*100:.0f}%)')
 
             if wr >= PROMOTE_WIN_RATE:
-                save_champion(challenger, episode=ep)  # ← ep 전달
+                save_champion(challenger, episode=ep)
                 champ_weights    = challenger.clone_weights()
                 champion_updated = True
                 stats['champion_updates'] += 1
@@ -458,7 +520,7 @@ def train(resume: bool = False):
             stats['champion_updated'] = champion_updated
 
         if ep % SAVE_EVERY == 0:
-            save_champion(challenger, episode=ep)  # ← ep 전달
+            save_champion(challenger, episode=ep)
             save_log(log)
 
         record = {
@@ -489,7 +551,7 @@ def train(resume: bool = False):
         quit_f, save_f, export_f = dash.handle_events()
 
         if save_f:
-            save_champion(challenger, episode=ep)  # ← ep 전달
+            save_champion(challenger, episode=ep)
             save_log(log)
             print(f'[SAVE] 수동 저장 (에피소드 {ep:,})')
         if export_f:
@@ -498,12 +560,13 @@ def train(resume: bool = False):
             print('\n[QUIT] 저장 후 종료')
             break
 
-    save_champion(challenger, episode=ep)  # ← ep 전달
+    save_champion(challenger, episode=ep)
     save_log(log)
     print('[DONE] 학습 종료 — 최종 저장 완료')
     pygame.quit()
 
-# CLI
+
+# ── CLI ──────────────────────────────────────────────────
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='오목 Self-Play PPO 학습')
     parser.add_argument('--resume',     action='store_true',

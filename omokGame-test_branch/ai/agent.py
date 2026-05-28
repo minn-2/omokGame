@@ -30,21 +30,22 @@ class Memory:
 
 class PPOAgent:
     # ── 하이퍼파라미터
-    LR          = 3e-4
-    GAMMA       = 0.99
-    GAE_LAMBDA  = 0.95
-    CLIP_EPS    = 0.2
-    ENTROPY_C   = 0.02    # 0.01 → 0.02: 탐색 강화
-    VALUE_C     = 0.5
-    EPOCHS      = 4
-    BATCH_SIZE  = 16
-    TRAIN_EVERY = 5       # 5판마다 학습하여 초기 loss 피드백을 빠르게 받음
-    REWARD_SCALE = 0.02   # 보상 스케일 (50 * 0.02 = 1.0, Tanh 범위에 맞춤)
+    LR           = 3e-4
+    GAMMA        = 0.99
+    GAE_LAMBDA   = 0.95
+    CLIP_EPS     = 0.2
+    ENTROPY_C    = 0.005   # 낮춰서 탐색보다 수렴 우선
+    VALUE_C      = 0.5
+    EPOCHS       = 4
+    BATCH_SIZE   = 64      # 16 → 64: 더 안정적인 그래디언트
+    TRAIN_EVERY  = 1       # 5 → 1: 매판 학습하여 빠른 피드백
+    REWARD_SCALE = 0.05    # 0.02 → 0.05: 신호 강화
 
     def __init__(self, board_size: int = 15, player: int = 2):
-        self.board_size  = board_size
-        self.player      = player
-        self.device      = torch.device(
+        self.board_size   = board_size
+        self.player       = player
+        self._eval_mode   = False   # True 이면 메모리에 저장 안 함
+        self.device       = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
 
         self.net     = PPOModel(board_size).to(self.device)
@@ -57,7 +58,7 @@ class PPOAgent:
 
         self.memory    = Memory()
         self.last_loss : float | None = None
-        self._ep_count = 0            # 판 수 카운터
+        self._ep_count = 0
 
     # ── 행동 선택
     def decide_next_move(self, engine):
@@ -87,20 +88,19 @@ class PPOAgent:
         dist   = Categorical(probs)
         action = dist.sample()
 
-        self.memory.states.append(state)
-        self.memory.actions.append(action.item())
-        self.memory.logprobs.append(dist.log_prob(action).item())
-        self.memory.values.append(value)
+        # 평가 모드일 때는 메모리에 쌓지 않음
+        if not self._eval_mode:
+            self.memory.states.append(state)
+            self.memory.actions.append(action.item())
+            self.memory.logprobs.append(dist.log_prob(action).item())
+            self.memory.values.append(value)
 
         row, col = divmod(action.item(), self.board_size)
         return (row, col)
 
     def _build_mask(self, board_np: np.ndarray,
                     player: int) -> torch.Tensor:
-        # 속도 최적화:
-        # 흑 금수 검사를 보드 전체 빈칸에 수행하면 매우 느리므로,
-        # 기존 돌 주변 후보 칸만 대상으로 금수 검사를 수행한다.
-        n = self.board_size
+        n    = self.board_size
         mask = (board_np == 0).flatten()
         if player == 1:
             candidate_mask = np.zeros(n * n, dtype=bool)
@@ -113,27 +113,28 @@ class PPOAgent:
                     for dr in range(-2, 3):
                         for dc in range(-2, 3):
                             nr, nc = or_ + dr, oc + dc
-                            if 0 <= nr < n and 0 <= nc < n and board_np[nr, nc] == 0:
+                            if 0 <= nr < n and 0 <= nc < n \
+                                    and board_np[nr, nc] == 0:
                                 candidate_mask[nr * n + nc] = True
-
             mask = mask & candidate_mask
             cand_idx = np.where(mask)[0]
             for idx in cand_idx:
                 r, c = divmod(int(idx), n)
                 if Rules.is_forbidden(board_np, r, c, 1):
                     mask[idx] = False
+
         return torch.tensor(mask, dtype=torch.bool, device=self.device)
 
     # ── 보상 저장 + 학습 트리거
     def store_reward(self, reward: float, done: bool = False):
-        # 보상 스케일 조정 (Tanh 출력 범위에 맞춤)
+        if self._eval_mode:
+            return
         scaled_reward = reward * self.REWARD_SCALE
         self.memory.rewards.append(scaled_reward)
         self.memory.dones.append(done)
 
         if done:
             self._ep_count += 1
-            # TRAIN_EVERY 판마다 학습 (데이터 충분히 쌓인 후)
             if self._ep_count % self.TRAIN_EVERY == 0:
                 self.last_loss = self._train()
                 self.memory.clear()
@@ -142,7 +143,6 @@ class PPOAgent:
     def _train(self) -> float | None:
         T = min(len(self.memory.states), len(self.memory.rewards))
         if T < self.BATCH_SIZE:
-            # 데이터가 배치 크기보다 적으면 스킵
             return self.last_loss
 
         states   = torch.tensor(
@@ -169,7 +169,7 @@ class PPOAgent:
         for _ in range(self.EPOCHS):
             idx = torch.randperm(T, device=self.device)
             for start in range(0, T, self.BATCH_SIZE):
-                mb   = idx[start: start + self.BATCH_SIZE]
+                mb = idx[start: start + self.BATCH_SIZE]
                 if len(mb) < 2:
                     continue
                 loss = self._ppo_loss(
@@ -248,4 +248,3 @@ class PPOAgent:
         champ.old_net.load_state_dict(sd)
         champ.old_net.eval()
         return champ
-    
