@@ -21,10 +21,10 @@ LOG_PATH = CKPT_DIR / 'train_log.json'
 
 # 학습 설정
 BOARD_SIZE       = 15
-TOTAL_EPISODES   = 1000000
+TOTAL_EPISODES   = 1500000
 SAVE_EVERY       = 200
-EVAL_EVERY       = 500
-EVAL_GAMES       = 30
+EVAL_EVERY       = 1000
+EVAL_GAMES       = 20
 PROMOTE_WIN_RATE = 0.55
 
 # Pygame UI
