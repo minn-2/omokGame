@@ -9,12 +9,16 @@ from torch.distributions import Categorical
 from core.Rules import Rules
 from ai.model  import PPOModel
 
-SIMS_THREAT      = 25    # 위협 감지 시 시뮬레이션 수
-SIMS_LATE        = 30    # 후반 시뮬레이션 수
+MCTS_SIMS_THREAT      = 25    # 위협 감지 시 시뮬레이션 수
+MCTS_SIMS_LATE        = 30    # 후반 시뮬레이션 수
 LATE_GAME_THRESHOLD   = 30    # 이 수 이후를 "후반"으로 판단
 C_PUCT                = 1.5
 
+
+# ──────────────────────────────────────────
 # 경험 버퍼
+# ──────────────────────────────────────────
+
 class Memory:
     def __init__(self):
         self.states   : list = []
@@ -31,6 +35,11 @@ class Memory:
 
     def __len__(self):
         return len(self.rewards)
+
+
+# ──────────────────────────────────────────
+# 인라인 얕은 MCTS (외부 파일 없이 agent 내부에 완전 내장)
+# ──────────────────────────────────────────
 
 class _Node:
     __slots__ = ('parent','action','children',
@@ -66,7 +75,9 @@ def _check_win(board, action, player, n):
             return True
     return False
 
+
 def _valid_mask(board, player, n):
+    """빈 칸 중 기존 돌 주변 2칸 이내 + 흑돌 금수 제거."""
     flat = (board == 0).flatten()
     occupied = np.argwhere(board != 0)
     if len(occupied) == 0:
@@ -89,7 +100,12 @@ def _valid_mask(board, player, n):
                 mask[idx] = False
     return mask
 
-def _shallow(net, board_np, player, n_sims, n, device):
+
+def _shallow_mcts(net, board_np, player, n_sims, n, device):
+    """
+    얕은 MCTS. 최선 action(flat index) 반환.
+    net: old_net (eval 모드)
+    """
     root = _Node(None, -1, 1.0)
     root.n = 1  # sqrt(0) 방지
 
@@ -165,7 +181,11 @@ def _shallow(net, board_np, player, n_sims, n, device):
     best = max(root.children.values(), key=lambda x: x.n)
     return best.action
 
+
+# ──────────────────────────────────────────
 # 위협 감지 유틸
+# ──────────────────────────────────────────
+
 def _max_len_at(board, r, c, player, n):
     best = 1
     for dr,dc in [(0,1),(1,0),(1,1),(1,-1)]:
@@ -177,13 +197,18 @@ def _max_len_at(board, r, c, player, n):
         best=max(best,cnt)
     return best
 
+
 def _threat_level(board, last_move, player, n):
     if last_move is None:
         return 0
     r, c = last_move
     return _max_len_at(board, r, c, player, n)
 
+
+# ──────────────────────────────────────────
 # PPOAgent
+# ──────────────────────────────────────────
+
 class PPOAgent:
     LR           = 3e-4
     GAMMA        = 0.99
@@ -192,7 +217,7 @@ class PPOAgent:
     ENTROPY_C    = 0.01
     VALUE_C      = 0.5
     EPOCHS       = 4
-    BATCH_SIZE   = 128
+    BATCH_SIZE   = 16     # 128 → 16: 짧은 게임에서도 학습 보장
     TRAIN_EVERY  = 1
     REWARD_SCALE = 0.05
 
@@ -220,23 +245,25 @@ class PPOAgent:
         self._last_opp_move : tuple[int,int] | None = None
 
     def reset_episode(self):
+        """train loop 에서 매 에피소드 시작 전 호출."""
         self._step_count    = 0
         self._last_opp_move = None
 
     def notify_opp_move(self, move: tuple[int,int]):
+        """상대 착수 후 train loop 에서 호출해 상대 마지막 수를 기록."""
         self._last_opp_move = move
         self._step_count   += 1
 
-    # 행동 선택 (외부 인터페이스)
+    # ── 행동 선택 (외부 인터페이스)
     def decide_next_move(self, engine,
                          temperature: float = 1.0,
-                         use   : bool  = False
+                         use_mcts   : bool  = False
                          ) -> tuple[int, int] | None:
         board_np = engine.board.board
         cur      = engine.current_player
         n        = self.board_size
 
-        # PPO 수 계산
+        # ── PPO 수 계산
         state   = engine.get_state()
         state_t = torch.tensor(
             state, dtype=torch.float32
@@ -261,19 +288,20 @@ class PPOAgent:
         ppo_action  = dist.sample()
         ppo_lp      = dist.log_prob(ppo_action).item()
 
+        # ── MCTS 개입 여부 판단
         final_action = ppo_action.item()
         if self._should_intervene(board_np, cur, n):
-            sims = (SIMS_LATE
+            sims = (MCTS_SIMS_LATE
                     if self._step_count >= LATE_GAME_THRESHOLD
-                    else SIMS_THREAT)
-            action = _shallow(
+                    else MCTS_SIMS_THREAT)
+            mcts_action = _shallow_mcts(
                 self.old_net, board_np, cur, sims, n, self.device)
-            if (action is not None
-                    and action != ppo_action.item()
-                    and mask_flat[action].item()):
-                final_action = action
+            if (mcts_action is not None
+                    and mcts_action != ppo_action.item()
+                    and mask_flat[mcts_action].item()):
+                final_action = mcts_action
 
-        # 메모리 저장 (log_prob 은 PPO 분포 기준 유지)
+        # ── 메모리 저장 (log_prob 은 PPO 분포 기준 유지)
         if not self._eval_mode:
             fa_t = torch.tensor(final_action, device=self.device)
             lp   = torch.log(
@@ -291,6 +319,7 @@ class PPOAgent:
         return (row, col)
 
     def decide_best_move(self, engine) -> tuple[int, int] | None:
+        """평가/대국 시 결정론적 선택 (argmax + MCTS 개입)."""
         board_np = engine.board.board
         cur      = engine.current_player
         n        = self.board_size
@@ -311,17 +340,18 @@ class PPOAgent:
         probs  = probs * mask_flat.float()
         action = int(probs.argmax().item())
 
+        # 평가 시에도 후반 MCTS 개입 (sims 줄임)
         if self._should_intervene(board_np, cur, n):
-            action = _shallow(
-                self.old_net, board_np, cur, SIMS_LATE, n, self.device)
-            if (action is not None
-                    and mask_flat[action].item()):
-                action = action
+            mcts_action = _shallow_mcts(
+                self.old_net, board_np, cur, MCTS_SIMS_LATE, n, self.device)
+            if (mcts_action is not None
+                    and mask_flat[mcts_action].item()):
+                action = mcts_action
 
         row, col = divmod(action, n)
         return (row, col)
 
-    # 개입 조건 판단
+    # ── 개입 조건 판단
     def _should_intervene(self, board_np, player, n) -> bool:
         opp = 3 - player
 
@@ -374,7 +404,7 @@ class PPOAgent:
 
         return torch.tensor(mask, dtype=torch.bool, device=self.device)
 
-    # 보상 저장 + 학습
+    # ── 보상 저장 + 학습
     def store_reward(self, reward: float, done: bool = False):
         if self._eval_mode:
             return
@@ -451,7 +481,7 @@ class PPOAgent:
 
         return policy_loss + self.VALUE_C*value_loss - self.ENTROPY_C*entropy
 
-    # 가중치 관리
+    # ── 가중치 관리
     def save(self, path: str = 'ppo_p2.pt'):
         torch.save({'net':self.net.state_dict(),
                     'optimizer':self.optimizer.state_dict()}, path)
@@ -477,5 +507,5 @@ class PPOAgent:
         champ.old_net.eval()
         return champ
 
-    def set(self, **kwargs):
+    def set_mcts(self, **kwargs):
         pass  # 호환성 유지

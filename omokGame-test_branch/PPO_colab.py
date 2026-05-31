@@ -1,3 +1,14 @@
+"""
+train_colab.py  —  Curriculum → Self-Play PPO (4일 T4 최적화)
+
+  - HEURISTIC_UNTIL 30,000: 기본기 습득 후 빠르게 셀프플레이로
+  - EVAL_EVERY 1,000, EVAL_GAMES 20: 평가 오버헤드 최소화
+  - shaped_reward: opp_move 기준 계산 (보드 전체 순회 제거)
+  - agent 내부 선택적 MCTS 개입 (sims=25~30, 조건부):
+      상대 3목↑ / 내 3목↑ / 후반(30수↑) 시에만 개입
+      평균 판당 추가 소요 < 0.05초
+"""
+
 import json
 import zipfile
 import argparse
@@ -24,10 +35,15 @@ SAVE_EVERY        = 500
 DRIVE_SAVE_EVERY  = 2000
 EVAL_EVERY        = 1000
 EVAL_GAMES        = 20
-PROMOTE_WIN_RATE  = 0.55
+PROMOTE_WIN_RATE  = 0.52   # 0.55 → 0.52: 갱신 기준 완화
 MAX_HALF_MOVES    = BOARD_SIZE * BOARD_SIZE * 2
 MAX_INVALID_MOVES = 8
 HEURISTIC_UNTIL   = 30_000
+
+# ── 모드 붕괴 감지 & 챔피언 리셋
+COLLAPSE_WINDOW   = 200    # 최근 N판 승률로 붕괴 감지
+COLLAPSE_THRESH   = 0.05   # 최근 승률이 이 이하면 붕괴로 판단
+RESET_EVERY       = 50_000 # 이 에피소드마다 강제 챔피언 동기화 (보험)
 
 
 class HeuristicBot:
@@ -291,6 +307,9 @@ def train(resume=False):
     best_eval_wr  = 0.0
     heuristic_bot = HeuristicBot()
 
+    # 모드 붕괴 감지용 최근 결과 윈도우
+    recent_results: list = []   # True=challenger 승, False=패/무
+
     stats = {
         'episode':start_ep,'steps':0,
         'challenger_wins':summ['challenger_wins'],
@@ -366,6 +385,33 @@ def train(resume=False):
         else:
             challenger_won = None;  summ['draws']           += 1
 
+        # ── 모드 붕괴 감지 & 챔피언 리셋 (Phase 2 한정)
+        if not use_heuristic:
+            recent_results.append(challenger_won is True)
+            if len(recent_results) > COLLAPSE_WINDOW:
+                recent_results.pop(0)
+
+            win_rate_recent = sum(recent_results) / len(recent_results) if recent_results else 0.5
+
+            # 최근 승률이 너무 낮으면 챔피언을 challenger 현재 가중치로 리셋
+            if (len(recent_results) >= COLLAPSE_WINDOW
+                    and win_rate_recent < COLLAPSE_THRESH):
+                print("\n  [붕괴 감지] ep %d 최근 %d판 승률 %.1f%%" % (ep, COLLAPSE_WINDOW, win_rate_recent*100))
+                print("  -> 챔피언을 challenger 현재 가중치로 리셋")
+                champ_weights = challenger.clone_weights()
+                best_eval_wr  = 0.0
+                recent_results.clear()
+                save_champion(challenger, episode=ep)
+
+            # 주기적 강제 동기화
+            elif (not use_heuristic
+                    and ep % RESET_EVERY == 0
+                    and win_rate_recent < 0.35):
+                print("\n  [주기 리셋] ep %d 최근 승률 %.1f%% -> 챔피언 동기화" % (ep, win_rate_recent*100))
+                champ_weights = challenger.clone_weights()
+                best_eval_wr  = 0.0
+                recent_results.clear()
+
         if ep % EVAL_EVERY == 0 and not use_heuristic:
             print(f'\n[EVAL] ep {ep:,} — {EVAL_GAMES}판...')
             wr = evaluate(challenger, champ_weights, EVAL_GAMES)
@@ -413,6 +459,7 @@ def train(resume=False):
     save_to_drive(ep)
     save_log(log)
     print('\n[DONE] 학습 종료')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
