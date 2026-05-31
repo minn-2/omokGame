@@ -361,25 +361,24 @@ class PPOAgent:
             candidate_mask = np.zeros((n, n), dtype=bool)
             candidate_mask[n//2, n//2] = True
         else:
-            # 이중 for루프 제거 → numpy 벡터 연산으로 교체
             rows = occupied[:, 0]
             cols = occupied[:, 1]
-            r0 = np.clip(rows - 2, 0, n)
-            r1 = np.clip(rows + 3, 0, n)
-            c0 = np.clip(cols - 2, 0, n)
-            c1 = np.clip(cols + 3, 0, n)
-
             candidate_mask = np.zeros((n, n), dtype=bool)
             for i in range(len(occupied)):
-                candidate_mask[r0[i]:r1[i], c0[i]:c1[i]] = True
+                r0 = max(0, int(rows[i])-2); r1 = min(n, int(rows[i])+3)
+                c0 = max(0, int(cols[i])-2); c1 = min(n, int(cols[i])+3)
+                candidate_mask[r0:r1, c0:c1] = True
 
         mask = empty & candidate_mask
 
+    # 흑돌 금수 체크 — 후보칸 적을 때만 (20칸 이하)
+    # 초반엔 후보칸이 적어서 빠름, 중반 이후엔 스킵해도 학습에 영향 미미
         if player == 1:
             idxs = np.argwhere(mask)
-            for r, c in idxs:
-                if Rules.is_forbidden(board_np, r, c, 1):
-                    mask[r, c] = False
+            if len(idxs) <= 20:  # 후보칸 많으면 금수 체크 스킵
+                for r, c in idxs:
+                    if Rules.is_forbidden(board_np, r, c, 1):
+                        mask[r, c] = False
 
         flat = mask.flatten()
         return torch.tensor(flat, dtype=torch.bool, device=self.device)
