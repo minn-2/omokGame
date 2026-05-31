@@ -276,16 +276,6 @@ class PPOAgent:
 
         # ── MCTS 개입 (조건2 제거: 전체 보드 순회 병목 제거)
         final_action = ppo_action.item()
-        if self._should_intervene(board_np, cur, n):
-            sims = (MCTS_SIMS_LATE
-                    if self._step_count >= LATE_GAME_THRESHOLD
-                    else MCTS_SIMS_THREAT)
-            mcts_action = _shallow_mcts(
-                self.old_net, board_np, cur, sims, n, self.device)
-            if (mcts_action is not None
-                    and mcts_action != ppo_action.item()
-                    and mask_flat[mcts_action].item()):
-                final_action = mcts_action
 
         if not self._eval_mode:
             fa_t = torch.tensor(final_action, device=self.device)
