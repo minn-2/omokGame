@@ -9,9 +9,9 @@ from torch.distributions import Categorical
 from core.Rules import Rules
 from ai.model  import PPOModel
 
-MCTS_SIMS_THREAT      = 25    # 위협 감지 시 시뮬레이션 수
-MCTS_SIMS_LATE        = 30    # 후반 시뮬레이션 수
-LATE_GAME_THRESHOLD   = 30    # 이 수 이후를 "후반"으로 판단
+MCTS_SIMS_THREAT      = 25
+MCTS_SIMS_LATE        = 30
+LATE_GAME_THRESHOLD   = 30
 C_PUCT                = 1.5
 
 
@@ -38,7 +38,7 @@ class Memory:
 
 
 # ──────────────────────────────────────────
-# 인라인 얕은 MCTS (외부 파일 없이 agent 내부에 완전 내장)
+# 인라인 얕은 MCTS
 # ──────────────────────────────────────────
 
 class _Node:
@@ -77,7 +77,6 @@ def _check_win(board, action, player, n):
 
 
 def _valid_mask(board, player, n):
-    """빈 칸 중 기존 돌 주변 2칸 이내 + 흑돌 금수 제거."""
     flat = (board == 0).flatten()
     occupied = np.argwhere(board != 0)
     if len(occupied) == 0:
@@ -102,12 +101,8 @@ def _valid_mask(board, player, n):
 
 
 def _shallow_mcts(net, board_np, player, n_sims, n, device):
-    """
-    얕은 MCTS. 최선 action(flat index) 반환.
-    net: old_net (eval 모드)
-    """
     root = _Node(None, -1, 1.0)
-    root.n = 1  # sqrt(0) 방지
+    root.n = 1
 
     def _expand(node, b, p):
         mask = _valid_mask(b, p, n)
@@ -115,7 +110,6 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
         if len(idxs) == 0:
             node.expanded = True; return
 
-        # 정책 네트워크 prior
         ch0 = (b==p).astype(np.float32)
         ch1 = (b==(3-p)).astype(np.float32)
         ch2 = np.full((n,n), 1.0 if p==1 else 0.0, dtype=np.float32)
@@ -150,13 +144,11 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
         b    = board_np.copy()
         p    = player
 
-        # Selection
         while node.expanded and node.children:
             node = node.best_child(C_PUCT)
             r,c  = divmod(node.action, n)
             b[r,c] = p; p = 3-p
 
-        # Terminal check
         if node.action >= 0 and _check_win(b, node.action, 3-p, n):
             v = -1.0
         elif not (b==0).any():
@@ -170,14 +162,12 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
                     b[r,c] = p; p = 3-p
             v = _evaluate(b, p)
 
-        # Backprop
         cur = node
         while cur is not None:
             cur.n += 1; cur.w += v; v = -v; cur = cur.parent
 
     if not root.children:
         return None
-    # 방문 횟수 최대 노드 선택
     best = max(root.children.values(), key=lambda x: x.n)
     return best.action
 
@@ -217,7 +207,7 @@ class PPOAgent:
     ENTROPY_C    = 0.01
     VALUE_C      = 0.5
     EPOCHS       = 4
-    BATCH_SIZE   = 16     # 128 → 16: 짧은 게임에서도 학습 보장
+    BATCH_SIZE   = 48     # 16 → 48: gradient 안정성 향상
     TRAIN_EVERY  = 1
     REWARD_SCALE = 0.05
 
@@ -240,21 +230,18 @@ class PPOAgent:
         self.last_loss : float | None = None
         self._ep_count = 0
 
-        # 판 내 상태 추적 (train loop 에서 매 판 리셋)
-        self._step_count  = 0   # 현재 판의 전체 착수 수
+        self._step_count  = 0
         self._last_opp_move : tuple[int,int] | None = None
 
     def reset_episode(self):
-        """train loop 에서 매 에피소드 시작 전 호출."""
         self._step_count    = 0
         self._last_opp_move = None
 
     def notify_opp_move(self, move: tuple[int,int]):
-        """상대 착수 후 train loop 에서 호출해 상대 마지막 수를 기록."""
         self._last_opp_move = move
         self._step_count   += 1
 
-    # ── 행동 선택 (외부 인터페이스)
+    # ── 행동 선택 (학습용)
     def decide_next_move(self, engine,
                          temperature: float = 1.0,
                          use_mcts   : bool  = False
@@ -263,7 +250,6 @@ class PPOAgent:
         cur      = engine.current_player
         n        = self.board_size
 
-        # ── PPO 수 계산
         state   = engine.get_state()
         state_t = torch.tensor(
             state, dtype=torch.float32
@@ -288,7 +274,7 @@ class PPOAgent:
         ppo_action  = dist.sample()
         ppo_lp      = dist.log_prob(ppo_action).item()
 
-        # ── MCTS 개입 여부 판단
+        # ── MCTS 개입 (조건2 제거: 전체 보드 순회 병목 제거)
         final_action = ppo_action.item()
         if self._should_intervene(board_np, cur, n):
             sims = (MCTS_SIMS_LATE
@@ -301,7 +287,6 @@ class PPOAgent:
                     and mask_flat[mcts_action].item()):
                 final_action = mcts_action
 
-        # ── 메모리 저장 (log_prob 은 PPO 분포 기준 유지)
         if not self._eval_mode:
             fa_t = torch.tensor(final_action, device=self.device)
             lp   = torch.log(
@@ -313,13 +298,17 @@ class PPOAgent:
             self.memory.values.append(value)
 
         self._step_count += 1
-        self._last_opp_move = None  # 내 수 이후 초기화
+        self._last_opp_move = None
 
         row, col = divmod(final_action, n)
         return (row, col)
 
-    def decide_best_move(self, engine) -> tuple[int, int] | None:
-        """평가/대국 시 결정론적 선택 (argmax + MCTS 개입)."""
+    def decide_best_move(self, engine,
+                         no_mcts: bool = False
+                         ) -> tuple[int, int] | None:
+        """평가/대국 시 결정론적 선택.
+        no_mcts=True: MCTS 개입 완전히 끔 (eval 속도 향상용).
+        """
         board_np = engine.board.board
         cur      = engine.current_player
         n        = self.board_size
@@ -340,8 +329,8 @@ class PPOAgent:
         probs  = probs * mask_flat.float()
         action = int(probs.argmax().item())
 
-        # 평가 시에도 후반 MCTS 개입 (sims 줄임)
-        if self._should_intervene(board_np, cur, n):
+        # no_mcts=False일 때만 MCTS 개입 (실전 대국용)
+        if not no_mcts and self._should_intervene(board_np, cur, n):
             mcts_action = _shallow_mcts(
                 self.old_net, board_np, cur, MCTS_SIMS_LATE, n, self.device)
             if (mcts_action is not None
@@ -352,21 +341,19 @@ class PPOAgent:
         return (row, col)
 
     # ── 개입 조건 판단
+    # 조건2(내 돌 전체 보드 순회) 제거 → 조건1+3으로 커버
     def _should_intervene(self, board_np, player, n) -> bool:
         opp = 3 - player
 
-        # 조건 1: 상대 마지막 수가 3목 이상
+        # 조건 1: 상대 마지막 수가 3목 이상 (방어)
         if self._last_opp_move is not None:
             r, c = self._last_opp_move
             if _max_len_at(board_np, r, c, opp, n) >= 3:
                 return True
 
-        # 조건 2: 내 돌 중 이미 3목 이상인 줄이 있음 (공격 찬스)
-        for r in range(n):
-            for c in range(n):
-                if board_np[r, c] == player:
-                    if _max_len_at(board_np, r, c, player, n) >= 3:
-                        return True
+        # 조건 2 제거: 전체 보드 순회로 인한 성능 병목
+        # → Phase2 기준 매 수마다 15×15=225회 호출 → 학습/eval 수십 배 느려짐
+        # → 조건1(상대 위협)과 조건3(후반)으로 충분히 커버됨
 
         # 조건 3: 게임 후반
         if self._step_count >= LATE_GAME_THRESHOLD:
@@ -508,4 +495,4 @@ class PPOAgent:
         return champ
 
     def set_mcts(self, **kwargs):
-        pass  # 호환성 유지
+        pass

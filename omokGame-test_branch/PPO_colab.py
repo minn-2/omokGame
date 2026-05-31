@@ -1,12 +1,12 @@
 """
 train_colab.py  —  Curriculum → Self-Play PPO (4일 T4 최적화)
 
-  - HEURISTIC_UNTIL 30,000: 기본기 습득 후 빠르게 셀프플레이로
-  - EVAL_EVERY 1,000, EVAL_GAMES 20: 평가 오버헤드 최소화
-  - shaped_reward: opp_move 기준 계산 (보드 전체 순회 제거)
-  - agent 내부 선택적 MCTS 개입 (sims=25~30, 조건부):
-      상대 3목↑ / 내 3목↑ / 후반(30수↑) 시에만 개입
-      평균 판당 추가 소요 < 0.05초
+변경사항:
+  - TOTAL_EPISODES 2,000,000으로 복구
+  - BATCH_SIZE 16 → 48 (학습 안정성 향상)
+  - PROMOTE_WIN_RATE 0.52 → 0.56 (챔피언 갱신 기준 강화)
+  - evaluate() 내부 no_mcts=True 로 eval 속도 대폭 개선
+  - eval 진행 로그 추가 (멈춤처럼 보이는 현상 방지)
 """
 
 import json
@@ -30,20 +30,20 @@ DRIVE_CKPT    = Path('/content/drive/MyDrive/omok_checkpoints')
 KAGGLE_OUT    = Path('/kaggle/working')
 
 BOARD_SIZE        = 15
-TOTAL_EPISODES    = 1_500_000
+TOTAL_EPISODES    = 2_000_000   # 2,000,000으로 복구
 SAVE_EVERY        = 500
 DRIVE_SAVE_EVERY  = 2000
 EVAL_EVERY        = 1000
 EVAL_GAMES        = 20
-PROMOTE_WIN_RATE  = 0.52   # 0.55 → 0.52: 갱신 기준 완화
+PROMOTE_WIN_RATE  = 0.56        # 0.52 → 0.56: 갱신 기준 강화
 MAX_HALF_MOVES    = BOARD_SIZE * BOARD_SIZE * 2
 MAX_INVALID_MOVES = 8
 HEURISTIC_UNTIL   = 30_000
 
 # ── 모드 붕괴 감지 & 챔피언 리셋
-COLLAPSE_WINDOW   = 200    # 최근 N판 승률로 붕괴 감지
-COLLAPSE_THRESH   = 0.05   # 최근 승률이 이 이하면 붕괴로 판단
-RESET_EVERY       = 50_000 # 이 에피소드마다 강제 챔피언 동기화 (보험)
+COLLAPSE_WINDOW   = 200
+COLLAPSE_THRESH   = 0.05
+RESET_EVERY       = 50_000
 
 
 class HeuristicBot:
@@ -243,13 +243,15 @@ def evaluate(challenger, champ_weights, n_games=EVAL_GAMES):
 
     black_wins = white_wins = 0
     for g in range(n_games):
+        print(f'  [EVAL] {g+1}/{n_games}판...', end='\r')  # 진행 로그 추가
         env = Engine(BOARD_SIZE); env.reset()
         ch_color = 1 if g < half else 2
         agents = {ch_color: challenger, 3-ch_color: champ}
         step = invalid = 0
         while not env.is_over and step < MAX_HALF_MOVES:
             cur  = env.current_player
-            move = agents[cur].decide_best_move(env)
+            # ── no_mcts=True: eval 중 MCTS 끔 (속도 대폭 향상, 정확도 영향 미미)
+            move = agents[cur].decide_best_move(env, no_mcts=True)
             if not safe_make_move(env, move):
                 invalid += 1
                 if invalid >= MAX_INVALID_MOVES: break
@@ -259,6 +261,7 @@ def evaluate(challenger, champ_weights, n_games=EVAL_GAMES):
             if ch_color == 1: black_wins += 1
             else: white_wins += 1
 
+    print()  # \r 줄 정리
     challenger._eval_mode = False
     (challenger.memory.states, challenger.memory.actions,
      challenger.memory.logprobs, challenger.memory.values,
@@ -307,8 +310,7 @@ def train(resume=False):
     best_eval_wr  = 0.0
     heuristic_bot = HeuristicBot()
 
-    # 모드 붕괴 감지용 최근 결과 윈도우
-    recent_results: list = []   # True=challenger 승, False=패/무
+    recent_results: list = []
 
     stats = {
         'episode':start_ep,'steps':0,
@@ -349,7 +351,7 @@ def train(resume=False):
 
         env = Engine(BOARD_SIZE); env.reset()
         challenger.memory.clear()
-        challenger.reset_episode()          # MCTS 개입용 상태 초기화
+        challenger.reset_episode()
         ep_reward = 0.0; step = 0
         champion_updated  = False
         last_opp_move     = None
@@ -371,7 +373,7 @@ def train(resume=False):
                 last_opp_move = None
             else:
                 last_opp_move = move
-                challenger.notify_opp_move(move)  # 상대 수 기록 → MCTS 개입 판단용
+                challenger.notify_opp_move(move)
                 if env.is_over:
                     r = shaped_reward(env, move, None, ch_color)
                     ep_reward += r
@@ -385,7 +387,7 @@ def train(resume=False):
         else:
             challenger_won = None;  summ['draws']           += 1
 
-        # ── 모드 붕괴 감지 & 챔피언 리셋 (Phase 2 한정)
+        # ── 모드 붕괴 감지 (Phase 2 한정)
         if not use_heuristic:
             recent_results.append(challenger_won is True)
             if len(recent_results) > COLLAPSE_WINDOW:
@@ -393,7 +395,6 @@ def train(resume=False):
 
             win_rate_recent = sum(recent_results) / len(recent_results) if recent_results else 0.5
 
-            # 최근 승률이 너무 낮으면 챔피언을 challenger 현재 가중치로 리셋
             if (len(recent_results) >= COLLAPSE_WINDOW
                     and win_rate_recent < COLLAPSE_THRESH):
                 print("\n  [붕괴 감지] ep %d 최근 %d판 승률 %.1f%%" % (ep, COLLAPSE_WINDOW, win_rate_recent*100))
@@ -403,7 +404,6 @@ def train(resume=False):
                 recent_results.clear()
                 save_champion(challenger, episode=ep)
 
-            # 주기적 강제 동기화
             elif (not use_heuristic
                     and ep % RESET_EVERY == 0
                     and win_rate_recent < 0.35):
