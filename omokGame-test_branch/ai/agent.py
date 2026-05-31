@@ -352,34 +352,37 @@ class PPOAgent:
         return False
 
     def _build_mask(self, board_np: np.ndarray,
-                    player: int) -> torch.Tensor:
-        n    = self.board_size
-        mask = (board_np == 0).flatten()
+                player: int) -> torch.Tensor:
+        n = self.board_size
+        empty = (board_np == 0)
 
         occupied = np.argwhere(board_np != 0)
         if len(occupied) == 0:
-            candidate_mask = np.zeros(n*n, dtype=bool)
-            center = n//2
-            candidate_mask[center*n+center] = True
+            candidate_mask = np.zeros((n, n), dtype=bool)
+            candidate_mask[n//2, n//2] = True
         else:
-            candidate_mask = np.zeros(n*n, dtype=bool)
-            for or_, oc in occupied:
-                r0=max(0,int(or_)-2); r1=min(n,int(or_)+3)
-                c0=max(0,int(oc)-2);  c1=min(n,int(oc)+3)
-                for nr in range(r0,r1):
-                    for nc in range(c0,c1):
-                        if board_np[nr,nc]==0:
-                            candidate_mask[nr*n+nc]=True
+            # 이중 for루프 제거 → numpy 벡터 연산으로 교체
+            rows = occupied[:, 0]
+            cols = occupied[:, 1]
+            r0 = np.clip(rows - 2, 0, n)
+            r1 = np.clip(rows + 3, 0, n)
+            c0 = np.clip(cols - 2, 0, n)
+            c1 = np.clip(cols + 3, 0, n)
 
-        mask = mask & candidate_mask
+            candidate_mask = np.zeros((n, n), dtype=bool)
+            for i in range(len(occupied)):
+                candidate_mask[r0[i]:r1[i], c0[i]:c1[i]] = True
+
+        mask = empty & candidate_mask
 
         if player == 1:
-            for idx in np.where(mask)[0]:
-                r,c = divmod(int(idx),n)
-                if Rules.is_forbidden(board_np,r,c,1):
-                    mask[idx] = False
+            idxs = np.argwhere(mask)
+            for r, c in idxs:
+                if Rules.is_forbidden(board_np, r, c, 1):
+                    mask[r, c] = False
 
-        return torch.tensor(mask, dtype=torch.bool, device=self.device)
+        flat = mask.flatten()
+        return torch.tensor(flat, dtype=torch.bool, device=self.device)
 
     # ── 보상 저장 + 학습
     def store_reward(self, reward: float, done: bool = False):
