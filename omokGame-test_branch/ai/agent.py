@@ -351,34 +351,24 @@ class PPOAgent:
 
         return False
 
+    from scipy.ndimage import uniform_filter
+
     def _build_mask(self, board_np: np.ndarray,
                 player: int) -> torch.Tensor:
         n = self.board_size
         empty = (board_np == 0)
+        occupied = (board_np != 0).astype(np.float32)
 
-        occupied = np.argwhere(board_np != 0)
-        if len(occupied) == 0:
+        if occupied.sum() == 0:
             candidate_mask = np.zeros((n, n), dtype=bool)
             candidate_mask[n//2, n//2] = True
         else:
-            rows = occupied[:, 0]
-            cols = occupied[:, 1]
-            candidate_mask = np.zeros((n, n), dtype=bool)
-            for i in range(len(occupied)):
-                r0 = max(0, int(rows[i])-2); r1 = min(n, int(rows[i])+3)
-                c0 = max(0, int(cols[i])-2); c1 = min(n, int(cols[i])+3)
-                candidate_mask[r0:r1, c0:c1] = True
+            # 5x5 균일 필터로 주변 2칸 이내 한번에 계산
+            from scipy.ndimage import uniform_filter
+            neighbor = uniform_filter(occupied, size=5, mode='constant') > 0
+            candidate_mask = neighbor & empty
 
         mask = empty & candidate_mask
-
-    # 흑돌 금수 체크 — 후보칸 적을 때만 (20칸 이하)
-    # 초반엔 후보칸이 적어서 빠름, 중반 이후엔 스킵해도 학습에 영향 미미
-        if player == 1:
-            idxs = np.argwhere(mask)
-            if len(idxs) <= 20:  # 후보칸 많으면 금수 체크 스킵
-                for r, c in idxs:
-                    if Rules.is_forbidden(board_np, r, c, 1):
-                        mask[r, c] = False
 
         flat = mask.flatten()
         return torch.tensor(flat, dtype=torch.bool, device=self.device)
