@@ -167,6 +167,7 @@ class Play:
                 self.last_move = (i, j)
                 self._check_game_over()
                 if self.mode == 'ai' and not self.engine.is_over:
+                    self.agent.notify_opp_move((i, j))
                     self.ai_pending = True
                     self.ai_timer   = pygame.time.get_ticks()
 
@@ -177,7 +178,7 @@ class Play:
         if self.engine.current_player != 2:  # AI = 백돌(2) 고정
             return
 
-        move = self.agent.decide_next_move(self.engine)
+        move = self.agent.decide_best_move(self.engine, no_search=False)
         if move:
             self.engine.make_move(*move)
             self.last_move = move
@@ -260,6 +261,7 @@ class Play:
         if self.ckpt_exists:
             self.agent = PPOAgent(BOARD_SIZE)
             self.agent.load(CKPT_PATH)
+            self.agent.reset_episode()
             print(f"[정보] 체크포인트 로드 완료: {CKPT_PATH}")
         else:
             self.agent = None

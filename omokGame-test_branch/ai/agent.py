@@ -9,16 +9,12 @@ from torch.distributions import Categorical
 from core.Rules import Rules
 from ai.model  import PPOModel
 
-MCTS_SIMS_THREAT      = 25
-MCTS_SIMS_LATE        = 30
-LATE_GAME_THRESHOLD   = 30
-C_PUCT                = 1.5
+SEARCH_SIMS_THREAT      = 60
+SEARCH_SIMS_LATE        = 80
+LATE_GAME_THRESHOLD   = 15   
+C_EXPLORE                = 1.5
 
-
-# ──────────────────────────────────────────
 # 경험 버퍼
-# ──────────────────────────────────────────
-
 class Memory:
     def __init__(self):
         self.states   : list = []
@@ -36,33 +32,7 @@ class Memory:
     def __len__(self):
         return len(self.rewards)
 
-
-# ──────────────────────────────────────────
-# 인라인 얕은 MCTS
-# ──────────────────────────────────────────
-
-class _Node:
-    __slots__ = ('parent','action','children',
-                 'n','w','p','expanded')
-    def __init__(self, parent, action, prior):
-        self.parent   = parent
-        self.action   = action
-        self.children : dict = {}
-        self.n = 0; self.w = 0.0; self.p = prior
-        self.expanded = False
-
-    @property
-    def q(self):
-        return self.w / self.n if self.n > 0 else 0.0
-
-    def ucb(self, c):
-        u = c * self.p * math.sqrt(self.parent.n) / (1 + self.n)
-        return self.q + u
-
-    def best_child(self, c):
-        return max(self.children.values(), key=lambda x: x.ucb(c))
-
-
+# 룰 기반 유틸
 def _check_win(board, action, player, n):
     r, c = divmod(action, n)
     for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
@@ -75,6 +45,33 @@ def _check_win(board, action, player, n):
             return True
     return False
 
+def _max_len_at(board, r, c, player, n):
+    best = 1
+    for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
+        cnt = 1
+        for s in (1,-1):
+            nr, nc = r+dr*s, c+dc*s
+            while 0<=nr<n and 0<=nc<n and board[nr,nc]==player:
+                cnt+=1; nr+=dr*s; nc+=dc*s
+        best = max(best, cnt)
+    return best
+
+def _count_open_ends(board, r, c, player, n):
+    score = 0
+    for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
+        cnt = 1
+        ends = []
+        for s in (1,-1):
+            nr, nc = r+dr*s, c+dc*s
+            while 0<=nr<n and 0<=nc<n and board[nr,nc]==player:
+                cnt+=1; nr+=dr*s; nc+=dc*s
+            if 0<=nr<n and 0<=nc<n and board[nr,nc]==0:
+                ends.append(1)
+            else:
+                ends.append(0)
+        if cnt >= 3 and sum(ends) >= 1:
+            score += cnt * sum(ends)
+    return score
 
 def _valid_mask(board, player, n):
     flat = (board == 0).flatten()
@@ -99,9 +96,30 @@ def _valid_mask(board, player, n):
                 mask[idx] = False
     return mask
 
+# 인라인 트리 탐색 (Tree Search)
+class _SearchNode:
+    __slots__ = ('parent','action','children',
+                 'n','w','p','expanded')
+    def __init__(self, parent, action, prior):
+        self.parent   = parent
+        self.action   = action
+        self.children : dict = {}
+        self.n = 0; self.w = 0.0; self.p = prior
+        self.expanded = False
 
-def _shallow_mcts(net, board_np, player, n_sims, n, device):
-    root = _Node(None, -1, 1.0)
+    @property
+    def q(self):
+        return self.w / self.n if self.n > 0 else 0.0
+
+    def ucb(self, c):
+        u = c * self.p * math.sqrt(self.parent.n) / (1 + self.n)
+        return self.q + u
+
+    def best_child(self, c):
+        return max(self.children.values(), key=lambda x: x.ucb(c))
+
+def _tree_search(net, board_np, player, n_sims, n, device):
+    root = _SearchNode(None, -1, 1.0)
     root.n = 1
 
     def _expand(node, b, p):
@@ -114,7 +132,7 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
         ch1 = (b==(3-p)).astype(np.float32)
         ch2 = np.full((n,n), 1.0 if p==1 else 0.0, dtype=np.float32)
         st  = torch.tensor(np.stack([ch0,ch1,ch2]),
-                           dtype=torch.float32).unsqueeze(0).to(device)
+                        dtype=torch.float32).unsqueeze(0).to(device)
         with torch.no_grad():
             probs, _ = net(st)
         pr = probs.squeeze(0).cpu().numpy()
@@ -123,8 +141,16 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
         if s > 1e-8: pr /= s
         else: pr[idxs] = 1.0/len(idxs)
 
+        top_k = 15
+        if len(idxs) > top_k:
+            top_idxs = np.argsort(pr)[::-1][:top_k]
+            mask2 = np.zeros(n*n, dtype=bool)
+            mask2[top_idxs] = True
+            mask = mask & mask2
+            idxs = np.where(mask)[0]
+
         for idx in idxs:
-            node.children[int(idx)] = _Node(node, int(idx), float(pr[idx]))
+            node.children[int(idx)] = _SearchNode(node, int(idx), float(pr[idx]))
         node.expanded = True
 
     def _evaluate(b, p):
@@ -145,7 +171,7 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
         p    = player
 
         while node.expanded and node.children:
-            node = node.best_child(C_PUCT)
+            node = node.best_child(C_EXPLORE)
             r,c  = divmod(node.action, n)
             b[r,c] = p; p = 3-p
 
@@ -157,7 +183,7 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
             if not node.expanded:
                 _expand(node, b, p)
                 if node.children:
-                    node = node.best_child(C_PUCT)
+                    node = node.best_child(C_EXPLORE)
                     r,c  = divmod(node.action, n)
                     b[r,c] = p; p = 3-p
             v = _evaluate(b, p)
@@ -171,34 +197,7 @@ def _shallow_mcts(net, board_np, player, n_sims, n, device):
     best = max(root.children.values(), key=lambda x: x.n)
     return best.action
 
-
-# ──────────────────────────────────────────
-# 위협 감지 유틸
-# ──────────────────────────────────────────
-
-def _max_len_at(board, r, c, player, n):
-    best = 1
-    for dr,dc in [(0,1),(1,0),(1,1),(1,-1)]:
-        cnt=1
-        for s in (1,-1):
-            nr,nc=r+dr*s,c+dc*s
-            while 0<=nr<n and 0<=nc<n and board[nr,nc]==player:
-                cnt+=1; nr+=dr*s; nc+=dc*s
-        best=max(best,cnt)
-    return best
-
-
-def _threat_level(board, last_move, player, n):
-    if last_move is None:
-        return 0
-    r, c = last_move
-    return _max_len_at(board, r, c, player, n)
-
-
-# ──────────────────────────────────────────
 # PPOAgent
-# ──────────────────────────────────────────
-
 class PPOAgent:
     LR           = 3e-4
     GAMMA        = 0.99
@@ -207,7 +206,7 @@ class PPOAgent:
     ENTROPY_C    = 0.01
     VALUE_C      = 0.5
     EPOCHS       = 4
-    BATCH_SIZE   = 48     # 16 → 48: gradient 안정성 향상
+    BATCH_SIZE   = 48
     TRAIN_EVERY  = 1
     REWARD_SCALE = 0.05
 
@@ -241,10 +240,92 @@ class PPOAgent:
         self._last_opp_move = move
         self._step_count   += 1
 
-    # ── 행동 선택 (학습용)
+    # 룰 기반 선처리 
+    def _rule_based_move(self, board_np: np.ndarray,
+                         player: int, n: int
+                         ) -> tuple[int,int] | None:
+        opp       = 3 - player
+        my_mask   = _valid_mask(board_np, player, n)
+        opp_mask  = _valid_mask(board_np, opp, n)
+        my_idxs   = np.where(my_mask)[0]
+        opp_idxs  = np.where(opp_mask)[0]
+
+        # 1순위: 내 즉시 승리
+        for idx in my_idxs:
+            r, c = divmod(int(idx), n)
+            board_np[r, c] = player
+            win = _check_win(board_np, idx, player, n)
+            board_np[r, c] = 0
+            if win:
+                return (r, c)
+
+        # 2순위: 상대 즉시 승리 차단
+        for idx in opp_idxs:
+            r, c = divmod(int(idx), n)
+            board_np[r, c] = opp
+            win = _check_win(board_np, idx, opp, n)
+            board_np[r, c] = 0
+            if win and my_mask[idx]:
+                return (r, c)
+
+        # 3순위: 내 열린 4목 완성 (상대가 막기 전에)
+        best_atk, best_atk_score = None, 0
+        for idx in my_idxs:
+            r, c = divmod(int(idx), n)
+            board_np[r, c] = player
+            length = _max_len_at(board_np, r, c, player, n)
+            opens  = _count_open_ends(board_np, r, c, player, n)
+            board_np[r, c] = 0
+            if length >= 4 and opens > best_atk_score:
+                best_atk_score = opens
+                best_atk = (r, c)
+        if best_atk is not None:
+            return best_atk
+
+        # 4순위: 상대 열린 4목 차단
+        best_def, best_def_score = None, 0
+        for idx in opp_idxs:
+            r, c = divmod(int(idx), n)
+            board_np[r, c] = opp
+            length = _max_len_at(board_np, r, c, opp, n)
+            opens  = _count_open_ends(board_np, r, c, opp, n)
+            board_np[r, c] = 0
+            if length >= 4 and opens > best_def_score and my_mask[idx]:
+                best_def_score = opens
+                best_def = (r, c)
+        if best_def is not None:
+            return best_def
+
+        # 5순위: 상대 4목(닫힌 쪽 포함) 차단
+        for idx in opp_idxs:
+            r, c = divmod(int(idx), n)
+            board_np[r, c] = opp
+            length = _max_len_at(board_np, r, c, opp, n)
+            board_np[r, c] = 0
+            if length >= 4 and my_mask[idx]:
+                return (r, c)
+
+        return None  # 룰로 결정 못 하면 모델에 위임
+
+    def _should_intervene(self, board_np, player, n) -> bool:
+        opp = 3 - player
+
+        if self._last_opp_move is not None:
+            r, c = self._last_opp_move
+            if _max_len_at(board_np, r, c, opp, n) >= 2:
+                return True
+
+        for r in range(n):
+            for c in range(n):
+                if board_np[r, c] == player:
+                    if _max_len_at(board_np, r, c, player, n) >= 3:  # ← 한 단계 더 들여쓰기
+                        return True
+
+        return False
+    
     def decide_next_move(self, engine,
                          temperature: float = 1.0,
-                         use_mcts   : bool  = False
+                         use_search   : bool  = False
                          ) -> tuple[int, int] | None:
         board_np = engine.board.board
         cur      = engine.current_player
@@ -270,16 +351,13 @@ class PPOAgent:
         probs_masked = probs_masked / s if s > 1e-8 \
             else mask_flat.float() / mask_flat.float().sum()
 
-        dist        = Categorical(probs_masked)
-        ppo_action  = dist.sample()
-        ppo_lp      = dist.log_prob(ppo_action).item()
+        dist       = Categorical(probs_masked)
+        ppo_action = dist.sample()
 
-        # ── MCTS 개입 (조건2 제거: 전체 보드 순회 병목 제거)
         final_action = ppo_action.item()
 
         if not self._eval_mode:
-            fa_t = torch.tensor(final_action, device=self.device)
-            lp   = torch.log(
+            lp = torch.log(
                 probs_masked[final_action].clamp(min=1e-8)
             ).item()
             self.memory.states.append(state)
@@ -294,15 +372,20 @@ class PPOAgent:
         return (row, col)
 
     def decide_best_move(self, engine,
-                         no_mcts: bool = False
+                         no_search: bool = False
                          ) -> tuple[int, int] | None:
-        """평가/대국 시 결정론적 선택.
-        no_mcts=True: MCTS 개입 완전히 끔 (eval 속도 향상용).
-        """
         board_np = engine.board.board
         cur      = engine.current_player
         n        = self.board_size
 
+        # 1) 룰 기반 선처리
+        rule_move = self._rule_based_move(board_np, cur, n)
+        if rule_move is not None:
+            self._step_count += 1
+            self._last_opp_move = None
+            return rule_move
+
+        # 2) 모델 policy 준비
         state   = engine.get_state()
         state_t = torch.tensor(
             state, dtype=torch.float32
@@ -316,64 +399,50 @@ class PPOAgent:
         if not mask_flat.any():
             return None
 
-        probs  = probs * mask_flat.float()
-        action = int(probs.argmax().item())
+        probs_masked = probs * mask_flat.float()
+        action = int(probs_masked.argmax().item())
 
-        # no_mcts=False일 때만 MCTS 개입 (실전 대국용)
-        if not no_mcts and self._should_intervene(board_np, cur, n):
-            mcts_action = _shallow_mcts(
-                self.old_net, board_np, cur, MCTS_SIMS_LATE, n, self.device)
-            if (mcts_action is not None
-                    and mask_flat[mcts_action].item()):
-                action = mcts_action
+        if not no_search and self._should_intervene(board_np, cur, n):
+            n_sims = (SEARCH_SIMS_THREAT
+                      if self._step_count < LATE_GAME_THRESHOLD
+                      else SEARCH_SIMS_LATE)
+            search_action = _tree_search(
+                self.old_net, board_np, cur, n_sims, n, self.device)
+            if (search_action is not None
+                    and mask_flat[search_action].item()):
+                action = search_action
+
+        self._step_count += 1
+        self._last_opp_move = None
 
         row, col = divmod(action, n)
         return (row, col)
-
-    # ── 개입 조건 판단
-    # 조건2(내 돌 전체 보드 순회) 제거 → 조건1+3으로 커버
-    def _should_intervene(self, board_np, player, n) -> bool:
-        opp = 3 - player
-
-        # 조건 1: 상대 마지막 수가 3목 이상 (방어)
-        if self._last_opp_move is not None:
-            r, c = self._last_opp_move
-            if _max_len_at(board_np, r, c, opp, n) >= 3:
-                return True
-
-        # 조건 2 제거: 전체 보드 순회로 인한 성능 병목
-        # → Phase2 기준 매 수마다 15×15=225회 호출 → 학습/eval 수십 배 느려짐
-        # → 조건1(상대 위협)과 조건3(후반)으로 충분히 커버됨
-
-        # 조건 3: 게임 후반
-        if self._step_count >= LATE_GAME_THRESHOLD:
-            return True
-
-        return False
-
-    from scipy.ndimage import uniform_filter
-
+    
+    # 마스크 빌드
     def _build_mask(self, board_np: np.ndarray,
-                player: int) -> torch.Tensor:
-        n = self.board_size
-        empty = (board_np == 0)
-        occupied = (board_np != 0).astype(np.float32)
+                    player: int) -> torch.Tensor:
+        n        = self.board_size
+        empty    = (board_np == 0)
+        occupied = (board_np != 0)
 
-        if occupied.sum() == 0:
+        if not occupied.any():
             candidate_mask = np.zeros((n, n), dtype=bool)
             candidate_mask[n//2, n//2] = True
         else:
-            # 5x5 균일 필터로 주변 2칸 이내 한번에 계산
-            from scipy.ndimage import uniform_filter
-            neighbor = uniform_filter(occupied, size=5, mode='constant') > 0
+            # 주변 2칸 이내에 돌이 있는 빈 칸을 후보로 추림
+            # numpy 패딩 후 5×5 슬라이딩 윈도우 max → scipy 없이 동일 결과
+            pad      = np.pad(occupied, 2, mode='constant', constant_values=False)
+            neighbor = np.zeros((n, n), dtype=bool)
+            for dr in range(5):
+                for dc in range(5):
+                    neighbor |= pad[dr:dr+n, dc:dc+n]
             candidate_mask = neighbor & empty
 
         mask = empty & candidate_mask
-
         flat = mask.flatten()
         return torch.tensor(flat, dtype=torch.bool, device=self.device)
 
-    # ── 보상 저장 + 학습
+    # 보상 저장 + 학습
     def store_reward(self, reward: float, done: bool = False):
         if self._eval_mode:
             return
@@ -450,7 +519,7 @@ class PPOAgent:
 
         return policy_loss + self.VALUE_C*value_loss - self.ENTROPY_C*entropy
 
-    # ── 가중치 관리
+    # 가중치 관리
     def save(self, path: str = 'ppo_p2.pt'):
         torch.save({'net':self.net.state_dict(),
                     'optimizer':self.optimizer.state_dict()}, path)
@@ -476,5 +545,5 @@ class PPOAgent:
         champ.old_net.eval()
         return champ
 
-    def set_mcts(self, **kwargs):
+    def set_search(self, **kwargs):
         pass

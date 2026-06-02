@@ -17,7 +17,6 @@ class ResBlock(nn.Module):
     def forward(self, x):
         return F.relu(self.net(x) + x, inplace=True)
 
-
 # PPO 모델 (Actor-Critic)
 class PPOModel(nn.Module):
     # 기본 하이퍼파라미터

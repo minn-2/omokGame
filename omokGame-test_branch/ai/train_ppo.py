@@ -49,11 +49,9 @@ C_GREEN     = ( 80, 220, 120)
 C_YELLOW    = (240, 200,  60)
 C_BLUE      = ( 80, 160, 255)
 
-
-# ── 파일 유틸 ──────────────────────────────────────────────
+# 파일 유틸
 def ensure_dirs():
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 def save_champion(agent: PPOAgent, episode: int = 0):
     ensure_dirs()
@@ -63,7 +61,6 @@ def save_champion(agent: PPOAgent, episode: int = 0):
         'episode'  : episode,
     }, P2_PATH)
     print(f'  [♛ CHAMPION] ppo_p2.pt 갱신! (ep {episode:,})')
-
 
 def load_champion(agent: PPOAgent) -> int:
     if P2_PATH.exists():
@@ -77,7 +74,6 @@ def load_champion(agent: PPOAgent) -> int:
     else:
         print(f'  [SKIP] {P2_PATH} 없음 — 랜덤 가중치로 시작')
         return 0
-
 
 def load_log() -> dict:
     if LOG_PATH.exists():
@@ -100,7 +96,6 @@ def load_log() -> dict:
         },
     }
 
-
 def append_log(log: dict, record: dict):
     log['episodes'].append(record)
     s = log['summary']
@@ -113,12 +108,10 @@ def append_log(log: dict, record: dict):
         s['champion_updates'] += 1
     log['meta']['updated_at'] = datetime.now().isoformat(timespec='seconds')
 
-
 def save_log(log: dict):
     ensure_dirs()
     with open(LOG_PATH, 'w', encoding='utf-8') as f:
         json.dump(log, f, ensure_ascii=False, indent=2)
-
 
 def export_zip(out_dir: str = '.') -> str:
     ensure_dirs()
@@ -131,7 +124,6 @@ def export_zip(out_dir: str = '.') -> str:
                 print(f'  [ZIP] {p.name}')
     print(f'[EXPORT] → {zp}')
     return str(zp)
-
 
 def import_zip(zip_path: str) -> bool:
     ensure_dirs()
@@ -147,11 +139,9 @@ def import_zip(zip_path: str) -> bool:
     print(f'[IMPORT] 완료 ← {zp}')
     return True
 
-
-# ── 보상 (착수 후 보드 기준) ──────────────────────────────
+# 보상
 def shaped_reward(engine: Engine, move: tuple[int, int],
                   player: int) -> float:
-    """make_move() 직후 호출. move = 방금 놓은 (row, col)."""
     board = engine.board.board
     opp   = 3 - player
 
@@ -164,24 +154,21 @@ def shaped_reward(engine: Engine, move: tuple[int, int],
     r, c = move
     reward = 0.0
 
-    # ── 내 연속 길이 보상 (방금 놓은 돌 기준)
+    # 내 연속 길이 보상 (방금 놓은 돌 기준)
     my_len = _max_consecutive(board, r, c, player)
     if   my_len >= 4: reward += 8.0    # 4목 (열린/막힌 모두)
     elif my_len == 3: reward += 2.0    # 3목
 
-    # ── 상대 위협 차단 보상
-    #    방금 내가 놓기 전에 상대가 몇 목이었는지 역산 불가하므로,
-    #    현재 보드에서 상대 최대 연속을 체크
+    # 상대 위협 차단 보상
+    # 방금 내가 놓기 전에 상대가 몇 목이었는지 역산 불가하므로, 현재 보드에서 상대 최대 연속을 체크
     opp_len = _board_max_consecutive(board, opp)
     if   opp_len >= 4: reward -= 12.0  # 상대 4목 방치 페널티
     elif opp_len == 3: reward -=  3.0  # 상대 3목 방치 페널티
 
     return float(reward)
 
-
 def _max_consecutive(board: np.ndarray,
                      r: int, c: int, player: int) -> int:
-    """(r,c) 돌을 포함한 4방향 최대 연속 길이."""
     n = len(board)
     best = 1
     for dr, dc in [(0,1),(1,0),(1,1),(1,-1)]:
@@ -195,9 +182,7 @@ def _max_consecutive(board: np.ndarray,
         best = max(best, cnt)
     return best
 
-
 def _board_max_consecutive(board: np.ndarray, player: int) -> int:
-    """보드 전체에서 player 의 최대 연속 길이."""
     n    = len(board)
     best = 0
     for r in range(n):
@@ -208,12 +193,10 @@ def _board_max_consecutive(board: np.ndarray, player: int) -> int:
                     best = v
     return best
 
-
-# ── Champion 평가 ─────────────────────────────────────────
+# Champion 평가
 def evaluate(challenger: PPOAgent,
              champ_weights: dict,
              n_games: int = EVAL_GAMES) -> float:
-    """평가 중 challenger 메모리를 건드리지 않는다."""
     champ    = challenger.make_champion_agent(champ_weights)
     ch_wins  = 0
     mem_bak  = (
@@ -257,8 +240,7 @@ def evaluate(challenger: PPOAgent,
 
     return ch_wins / n_games
 
-
-# ── Pygame 대시보드 ───────────────────────────────────────
+# Pygame 대시보드
 class Dashboard:
     MAX_HIST = 200
 
@@ -417,8 +399,7 @@ class Dashboard:
         ys  = [y + h - 2 - int((v-mn)/rng*(h-14)) for v in pts]
         pygame.draw.lines(self.screen, color, False, list(zip(xs, ys)), 1)
 
-
-# ── 메인 학습 루프 ────────────────────────────────────────
+# 메인 학습 루프
 def train(resume: bool = False):
     ensure_dirs()
 
@@ -565,8 +546,7 @@ def train(resume: bool = False):
     print('[DONE] 학습 종료 — 최종 저장 완료')
     pygame.quit()
 
-
-# ── CLI ──────────────────────────────────────────────────
+# CLI
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='오목 Self-Play PPO 학습')
     parser.add_argument('--resume',     action='store_true',

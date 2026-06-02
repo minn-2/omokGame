@@ -49,19 +49,21 @@ class Board:
                     self.board, row, col, self.current_player): 
                 return False # 금수 자리라면 착수하지 않고 False 반환
 
-        # 4. 돌 놓기: 검증이 끝난 위치에 현재 플레이어의 돌을 배치
+        # 4. 돌 놓기
         self.board[row, col] = self.current_player
         
-        # 5. 승패 판정: Rules 클래스의 check_win을 통해 승리 조건 충족 확인
+        # 5. 승패 판정
         if Rules.check_win(self.board, row, col):
-            self.is_over = True # 승리 시 게임 종료 처리
-            self.winner  = self.current_player # 현재 플레이어를 승자로 기록
-            
-        # 6. 무승부 판정: 보드에 더 이상 빈칸(0)이 없으면 무승부 처리
-        elif not np.any(self.board == 0):
             self.is_over = True
-            self.winner  = 0 # 승리자 없음(무승부)
-            
-        # 7. 턴 교체: 3에서 현재 번호를 빼서 다음 플레이어로 전환 (1->2, 2->1)
+            self.winner  = self.current_player
+            return True  # ← 즉시 리턴, 턴 교체 스킵
+
+        # 6. 무승부 판정
+        if not np.any(self.board == 0):
+            self.is_over = True
+            self.winner  = 0
+            return True  # ← 즉시 리턴
+
+        # 7. 턴 교체 (게임 진행 중일 때만)
         self.current_player = 3 - self.current_player
         return True
