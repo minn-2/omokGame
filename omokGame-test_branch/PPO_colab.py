@@ -1,14 +1,3 @@
-"""
-train_colab.py  —  Curriculum → Self-Play PPO (4일 T4 최적화)
-
-변경사항:
-  - TOTAL_EPISODES 2,000,000으로 복구
-  - BATCH_SIZE 16 → 48 (학습 안정성 향상)
-  - PROMOTE_WIN_RATE 0.52 → 0.56 (챔피언 갱신 기준 강화)
-  - evaluate() 내부 no_mcts=True 로 eval 속도 대폭 개선
-  - eval 진행 로그 추가 (멈춤처럼 보이는 현상 방지)
-"""
-
 import json
 import zipfile
 import argparse
@@ -35,16 +24,15 @@ SAVE_EVERY        = 500
 DRIVE_SAVE_EVERY  = 2000
 EVAL_EVERY        = 1000
 EVAL_GAMES        = 20
-PROMOTE_WIN_RATE  = 0.56        # 0.52 → 0.56: 갱신 기준 강화
+PROMOTE_WIN_RATE  = 0.56 
 MAX_HALF_MOVES    = BOARD_SIZE * BOARD_SIZE * 2
 MAX_INVALID_MOVES = 8
 HEURISTIC_UNTIL   = 30_000
 
-# ── 모드 붕괴 감지 & 챔피언 리셋
+# 모드 붕괴 감지 & 챔피언 리셋
 COLLAPSE_WINDOW   = 200
 COLLAPSE_THRESH   = 0.05
 RESET_EVERY       = 50_000
-
 
 class HeuristicBot:
     def decide_next_move(self, engine,
@@ -108,7 +96,6 @@ class HeuristicBot:
         total = sum(weights); weights = [w/total for w in weights]
         idx = random.choices(range(len(candidates)), weights=weights, k=1)[0]
         return candidates[idx]
-
 
 def ensure_dirs():
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
@@ -188,7 +175,6 @@ def export_zip(out_dir='.'):
             if p.exists(): zf.write(p,arcname=p.name)
     print(f'[EXPORT] → {zp}'); return str(zp)
 
-
 def _max_len(board, r, c, player, n):
     best = 1
     for dr,dc in [(0,1),(1,0),(1,1),(1,-1)]:
@@ -231,7 +217,6 @@ def safe_make_move(env, move):
     try: return bool(env.make_move(*move))
     except Exception: return False
 
-
 def evaluate(challenger, champ_weights, n_games=EVAL_GAMES):
     assert n_games % 2 == 0
     half  = n_games // 2
@@ -269,7 +254,6 @@ def evaluate(challenger, champ_weights, n_games=EVAL_GAMES):
     return {'total':(black_wins+white_wins)/n_games,
             'black':black_wins/half, 'white':white_wins/half}
 
-
 def print_stats(ep, stats, eval_result, phase):
     bar_len  = 30
     bar      = '█'*int(ep/TOTAL_EPISODES*bar_len) + '░'*(bar_len-int(ep/TOTAL_EPISODES*bar_len))
@@ -289,7 +273,6 @@ def print_stats(ep, stats, eval_result, phase):
         print(f'  [{tag}] 전체:{eval_result["total"]*100:.1f}% 흑:{eval_result["black"]*100:.1f}% 백:{eval_result["white"]*100:.1f}%')
         print(f'  역대 최고:{stats["best_eval_wr"]*100:.1f}%  갱신:{stats["champion_updates"]}회')
     print(f'{"─"*60}')
-
 
 def train(resume=False):
     ensure_dirs()
@@ -387,7 +370,7 @@ def train(resume=False):
         else:
             challenger_won = None;  summ['draws']           += 1
 
-        # ── 모드 붕괴 감지 (Phase 2 한정)
+        # 모드 붕괴 감지
         if not use_heuristic:
             recent_results.append(challenger_won is True)
             if len(recent_results) > COLLAPSE_WINDOW:
@@ -459,7 +442,6 @@ def train(resume=False):
     save_to_drive(ep)
     save_log(log)
     print('\n[DONE] 학습 종료')
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
