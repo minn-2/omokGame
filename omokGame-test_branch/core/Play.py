@@ -190,9 +190,9 @@ class Play:
             return
 
         if self.engine.winner == 1:
-            msg = '흑돌(인간) 승리!'
+            msg = '흑돌 승리!'
         elif self.engine.winner == 2:
-            msg = '백돌(AI) 승리!'
+            msg = '백돌 승리!' if self.mode == 'human' else '백돌(AI) 승리!'
         else:
             msg = '무승부!'
 
@@ -373,13 +373,16 @@ class Play:
             if self.engine.winner == 1:
                 turn_text = '흑돌 승리!'
             elif self.engine.winner == 2:
-                turn_text = 'AI 승리!'
+                turn_text = '백돌 승리!' if self.mode == 'human' else 'AI 승리!'
             else:
                 turn_text = '무승부!'
         else:
-            turn_text = ('흑돌 (인간)'
-                         if self.engine.current_player == 1
-                         else '백돌 (AI)')
+            if self.mode == 'human':
+                turn_text = ('흑돌' if self.engine.current_player == 1 else '백돌')
+            else:
+                turn_text = ('흑돌 (인간)'
+                            if self.engine.current_player == 1
+                            else '백돌 (AI)')
 
         turn = self.font_medium.render(turn_text, True, WHITE_COLOR)
         self.screen.blit(turn,
