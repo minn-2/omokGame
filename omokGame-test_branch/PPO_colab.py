@@ -235,8 +235,7 @@ def evaluate(challenger, champ_weights, n_games=EVAL_GAMES):
         step = invalid = 0
         while not env.is_over and step < MAX_HALF_MOVES:
             cur  = env.current_player
-            # ── no_mcts=True: eval 중 MCTS 끔 (속도 대폭 향상, 정확도 영향 미미)
-            move = agents[cur].decide_best_move(env, no_mcts=True)
+            move = agents[cur].decide_best_move(env)
             if not safe_make_move(env, move):
                 invalid += 1
                 if invalid >= MAX_INVALID_MOVES: break

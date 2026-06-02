@@ -178,7 +178,7 @@ class Play:
         if self.engine.current_player != 2:  # AI = 백돌(2) 고정
             return
 
-        move = self.agent.decide_best_move(self.engine, no_search=False)
+        move = self.agent.decide_best_move(self.engine)
         if move:
             self.engine.make_move(*move)
             self.last_move = move

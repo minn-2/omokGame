@@ -371,50 +371,33 @@ class PPOAgent:
         row, col = divmod(final_action, n)
         return (row, col)
 
-    def decide_best_move(self, engine,
-                         no_search: bool = False
-                         ) -> tuple[int, int] | None:
+    def decide_best_move(self, engine) -> tuple[int, int] | None:
         board_np = engine.board.board
         cur      = engine.current_player
         n        = self.board_size
 
-        # 1) 룰 기반 선처리
-        rule_move = self._rule_based_move(board_np, cur, n)
-        if rule_move is not None:
-            self._step_count += 1
-            self._last_opp_move = None
-            return rule_move
-
-        # 2) 모델 policy 준비
+        # 1) 모델 policy
         state   = engine.get_state()
-        state_t = torch.tensor(
-            state, dtype=torch.float32
-        ).unsqueeze(0).to(self.device)
-
+        state_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
             probs, _ = self.old_net(state_t)
 
-        probs     = probs.squeeze(0)
-        mask_flat = self._build_mask(board_np, cur)
+        probs        = probs.squeeze(0)
+        mask_flat    = self._build_mask(board_np, cur)
         if not mask_flat.any():
             return None
 
         probs_masked = probs * mask_flat.float()
-        action = int(probs_masked.argmax().item())
+        action       = int(probs_masked.argmax().item())
 
-        if not no_search and self._should_intervene(board_np, cur, n):
-            n_sims = (SEARCH_SIMS_THREAT
-                      if self._step_count < LATE_GAME_THRESHOLD
-                      else SEARCH_SIMS_LATE)
-            search_action = _tree_search(
-                self.old_net, board_np, cur, n_sims, n, self.device)
-            if (search_action is not None
-                    and mask_flat[search_action].item()):
-                action = search_action
+        # 2) 즉시 승리/패배 방어만 룰로 보정
+        rule_move = self._rule_based_move(board_np, cur, n)
+        if rule_move is not None:
+            row, col = rule_move
+            return (row, col)
 
         self._step_count += 1
         self._last_opp_move = None
-
         row, col = divmod(action, n)
         return (row, col)
     
