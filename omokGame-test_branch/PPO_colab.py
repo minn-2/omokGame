@@ -19,7 +19,7 @@ DRIVE_CKPT    = Path('/content/drive/MyDrive/omok_checkpoints')
 KAGGLE_OUT    = Path('/kaggle/working')
 
 BOARD_SIZE        = 15
-TOTAL_EPISODES    = 2_000_000   # 2,000,000으로 복구
+TOTAL_EPISODES    = 1_000_000
 SAVE_EVERY        = 500
 DRIVE_SAVE_EVERY  = 2000
 EVAL_EVERY        = 1000

@@ -171,7 +171,7 @@ class Play:
                     self.ai_pending = True
                     self.ai_timer   = pygame.time.get_ticks()
 
-    # AI 착수 — 대국 중 학습 없음 (train.py 에서만 학습)
+    # AI 착수 — 대국 중 학습 없음
     def _ai_move(self):
         if self.agent is None or self.engine.is_over:
             return
