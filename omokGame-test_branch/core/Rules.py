@@ -98,7 +98,7 @@ def _has_four_in_direction(board: np.ndarray, r: int, c: int,
 # (r,c)를 포함하는 4의 개수 계산
 def count_fours(board, r, c, player):
 
-    key = hash(board.tobytes()), r, c, player
+    key = (board.tobytes(), r, c, player)
 
     if key in _four_cache:
         return _four_cache[key]
@@ -121,58 +121,28 @@ def count_fours(board, r, c, player):
 
     return cnt
 
-# 열린4(Open Four) 개수 계산
 def count_open_fours(board, r, c, player):
 
-    key = hash(board.tobytes()), r, c, player
+    key = (board.tobytes(), r, c, player)
 
     if key in _open_four_cache:
         return _open_four_cache[key]
-    
+
     count = 0
-    size = board.shape[0]
 
     for dr, dc in DIRECTIONS:
-
-        winning_moves = set()
-
-        for i in range(-5, 6):
-
-            nr = r + dr * i
-            nc = c + dc * i
-
-            if not _in_board(size, nr, nc):
-                continue
-
-            if board[nr, nc] != EMPTY:
-                continue
-
-            board[nr, nc] = player
-
-            legal = False
-
-            if player == BLACK:
-
-                if check_win(board, nr, nc):
-
-                    if not is_overline(board, nr, nc, player):
-
-                        if count_fours(board, nr, nc, player) < 2:
-                            legal = True
-
-            else:
-
-                legal = check_win(board, nr, nc)
-
-            board[nr, nc] = EMPTY
-
-            if legal:
-                winning_moves.add((nr, nc))
-
-        if len(winning_moves) >= 2:
+        if _is_open_four_in_direction(
+            board,
+            r,
+            c,
+            dr,
+            dc,
+            player
+        ):
             count += 1
 
     _open_four_cache[key] = count
+
     return count
 
 # 특정 방향 열린4 여부 판정
@@ -201,12 +171,7 @@ def _is_open_four_in_direction( board, r, c, dr, dc, player):
 
             if check_win(board, nr, nc):
 
-                if not is_overline(
-                    board,
-                nr,
-                nc,
-                player
-                ):
+                if not is_overline(board,nr, nc, player):
                     if count_fours(
                         board,
                         nr,
@@ -286,13 +251,7 @@ def is_legal_black_move(board, r, c, depth=0):
 
     if depth == 0:
 
-        if count_open_threes(
-            board,
-            r,
-            c,
-            BLACK,
-            depth + 1
-        ) >= 2:
+        if count_open_threes(board, r,  c,  player, ) >= 2:
             return False
 
     return True
@@ -357,7 +316,13 @@ def is_forbidden(board: np.ndarray, r: int, c: int,
         return True
 
     # 4) 33 (삼삼)
-    if _depth < 1 and count_open_threes(board, r, c, player, _depth) >= 2:
+    if _depth == 0 and count_open_threes(
+    board,
+    r,
+    c,
+    player,
+    _depth + 1
+    ) >= 2:
         board[r, c] = EMPTY
         return True
 
