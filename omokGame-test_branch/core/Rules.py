@@ -1,10 +1,14 @@
 import numpy as np
 from typing import List, Tuple, Optional
 
+_four_cache = {}
+_open_four_cache = {}
+_open_three_cache = {}
+
 # 상수
 EMPTY  = 0
-BLACK  = 1   # 흑 (금수 적용)
-WHITE  = 2   # 백
+BLACK  = 1 
+WHITE  = 2 
 
 DIRECTIONS: List[Tuple[int, int]] = [
     (0, 1),   # →  가로
@@ -51,19 +55,6 @@ def is_overline(board: np.ndarray, r: int, c: int, player: int) -> bool:
             return True
     return False
 
-# 4 카운트 (Double Four 판정용)
-def _direction_line(board: np.ndarray, r: int, c: int,
-                    dr: int, dc: int, half: int = 4) -> List:
-    size = board.shape[0]
-    result = []
-    for i in range(-half, half + 1):
-        nr, nc = r + dr * i, c + dc * i
-        if _in_board(size, nr, nc):
-            result.append((nr, nc, int(board[nr, nc])))
-        else:
-            result.append((nr, nc, -1))  # 벽
-    return result
-
 # 특정 방향에 4가 존재하는지 판정
 def _has_four_in_direction(board: np.ndarray, r: int, c: int,
                             dr: int, dc: int, player: int) -> bool:
@@ -80,8 +71,8 @@ def _has_four_in_direction(board: np.ndarray, r: int, c: int,
             line.append((i, nr, nc, -1))  # 벽
 
     found = False
-    n = len(line)
-    for start in range(n - 4):
+    center = 8
+    for start in range(center - 4, center + 1):
         window = line[start:start + 5]
         # (r,c) 가 이 윈도우에 포함되는지
         if not any(item[0] == 0 for item in window):
@@ -105,16 +96,39 @@ def _has_four_in_direction(board: np.ndarray, r: int, c: int,
     return found
 
 # (r,c)를 포함하는 4의 개수 계산
-def count_fours(board: np.ndarray, r: int, c: int, player: int) -> int:
+def count_fours(board, r, c, player):
+
+    key = hash(board.tobytes()), r, c, player
+
+    if key in _four_cache:
+        return _four_cache[key]
+
     cnt = 0
+
     for dr, dc in DIRECTIONS:
-        if _has_four_in_direction(board, r, c, dr, dc, player):
+
+        if _has_four_in_direction(
+            board,
+            r,
+            c,
+            dr,
+            dc,
+            player
+        ):
             cnt += 1
+
+    _four_cache[key] = cnt
+
     return cnt
 
 # 열린4(Open Four) 개수 계산
 def count_open_fours(board, r, c, player):
 
+    key = hash(board.tobytes()), r, c, player
+
+    if key in _open_four_cache:
+        return _open_four_cache[key]
+    
     count = 0
     size = board.shape[0]
 
@@ -158,6 +172,7 @@ def count_open_fours(board, r, c, player):
         if len(winning_moves) >= 2:
             count += 1
 
+    _open_four_cache[key] = count
     return count
 
 # 특정 방향 열린4 여부 판정
@@ -188,19 +203,16 @@ def _is_open_four_in_direction( board, r, c, dr, dc, player):
 
                 if not is_overline(
                     board,
-                    nr,
-                    nc,
-                    player
+                nr,
+                nc,
+                player
                 ):
-
-                    reason = get_forbidden_reason(
+                    if count_fours(
                         board,
                         nr,
                         nc,
                         player
-                    )
-
-                    if reason is None:
+                    ) < 2:
                         legal = True
 
         else:
@@ -286,17 +298,42 @@ def is_legal_black_move(board, r, c, depth=0):
     return True
 
 # 열린3 개수 계산
-def count_open_threes(board: np.ndarray, r: int, c: int,
-                      player: int, _depth: int = 0) -> int:
+def count_open_threes(board, r, c, player, _depth=0):
+
+    key = (hash(board.tobytes()), r, c, player, _depth)
+
+    if key in _open_three_cache:
+        return _open_three_cache[key]
+
     cnt = 0
+
     for dr, dc in DIRECTIONS:
-        if _has_open_three_in_direction(board, r, c, dr, dc, player, _depth):
+
+        if _has_open_three_in_direction(
+            board,
+            r,
+            c,
+            dr,
+            dc,
+            player,
+            _depth
+        ):
             cnt += 1
+
+    _open_three_cache[key] = cnt
+
     return cnt
+
+def clear_caches():
+    _four_cache.clear()
+    _open_four_cache.clear()
+    _open_three_cache.clear()
 
 # 금수 판정 (메인 API)
 def is_forbidden(board: np.ndarray, r: int, c: int,
                  player: int = BLACK, _depth: int = 0) -> bool:
+    if _depth == 0:
+        clear_caches()
     if player != BLACK:
         return False
     if board[r, c] != EMPTY:
@@ -330,6 +367,8 @@ def is_forbidden(board: np.ndarray, r: int, c: int,
 # 금수 종류 반환
 def get_forbidden_reason(board: np.ndarray, r: int, c: int,
                           player: int = BLACK) -> Optional[str]:
+    clear_caches()
+
     if player != BLACK:
         return None
     if board[r, c] != EMPTY:
@@ -354,16 +393,25 @@ def get_forbidden_reason(board: np.ndarray, r: int, c: int,
         return "double_three"
 
     board[r, c] = EMPTY
+    clear_caches()
     return None
 
 # 보드 전체 금수 위치 탐색
-def get_all_forbidden(board: np.ndarray, player: int = BLACK) -> List[Tuple[int, int]]:
+def get_all_forbidden(board, player=BLACK):
+
+    clear_caches()
+
     size = board.shape[0]
     result = []
+
     for r in range(size):
         for c in range(size):
-            if board[r, c] == EMPTY and is_forbidden(board, r, c, player):
-                result.append((r, c))
+            if board[r, c] == EMPTY:
+                if is_forbidden(board, r, c, player):
+                    result.append((r, c))
+
+    clear_caches()
+
     return result
 
 # 연속 패턴 개수 계산 (기존 코드 호환용)
@@ -447,6 +495,7 @@ def _place(board, moves):
         board[r, c] = p
 
 def _test_all():
+    clear_caches()
     print("=" * 60)
     print("렌주룰 테스트 시작")
     print("=" * 60)
