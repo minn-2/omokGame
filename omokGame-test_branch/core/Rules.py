@@ -17,6 +17,7 @@ DIRECTIONS: List[Tuple[int, int]] = [
 def _in_board(size: int, r: int, c: int) -> bool:
     return 0 <= r < size and 0 <= c < size
 
+# 특정 방향 연속 돌 개수 계산
 def _count_consecutive(board: np.ndarray, r: int, c: int,
                         dr: int, dc: int, player: int) -> int:
     size = board.shape[0]
@@ -63,6 +64,7 @@ def _direction_line(board: np.ndarray, r: int, c: int,
             result.append((nr, nc, -1))  # 벽
     return result
 
+# 특정 방향에 4가 존재하는지 판정
 def _has_four_in_direction(board: np.ndarray, r: int, c: int,
                             dr: int, dc: int, player: int) -> bool:
     size = board.shape[0]
@@ -102,6 +104,7 @@ def _has_four_in_direction(board: np.ndarray, r: int, c: int,
                 break
     return found
 
+# (r,c)를 포함하는 4의 개수 계산
 def count_fours(board: np.ndarray, r: int, c: int, player: int) -> int:
     cnt = 0
     for dr, dc in DIRECTIONS:
@@ -109,154 +112,180 @@ def count_fours(board: np.ndarray, r: int, c: int, player: int) -> int:
             cnt += 1
     return cnt
 
-# 열린 4 (Open Four) – 삼삼 판정용 내부 함수
-def _is_open_four_in_direction(board: np.ndarray, r: int, c: int,
-                                dr: int, dc: int, player: int) -> bool:
+# 열린4(Open Four) 개수 계산
+def count_open_fours(board, r, c, player):
+
+    count = 0
     size = board.shape[0]
-    opponent = WHITE if player == BLACK else BLACK
 
-    # 연속 길이와 양 끝 상태 파악
-    # (r,c) 포함 연속 구간의 양 끝 좌표를 찾음
-    left_r, left_c = r, c
-    right_r, right_c = r, c
+    for dr, dc in DIRECTIONS:
 
-    # 왼쪽(sign=-1) 방향으로 연속 확장
-    nr, nc = r - dr, c - dc
-    while _in_board(size, nr, nc) and board[nr, nc] == player:
-        left_r, left_c = nr, nc
-        nr -= dr
-        nc -= dc
+        winning_moves = set()
 
-    # 오른쪽(sign=+1) 방향으로 연속 확장
-    nr, nc = r + dr, c + dc
-    while _in_board(size, nr, nc) and board[nr, nc] == player:
-        right_r, right_c = nr, nc
-        nr += dr
-        nc += dc
+        for i in range(-5, 6):
 
-    if dr != 0:
-        length = abs(right_r - left_r) // abs(dr) + 1
-    else:
-        length = abs(right_c - left_c) // abs(dc) + 1
+            nr = r + dr * i
+            nc = c + dc * i
 
-    if length != 4:
-        return False
+            if not _in_board(size, nr, nc):
+                continue
 
-    # 양 끝 바깥이 빈칸인지 확인
-    before_r, before_c = left_r - dr, left_c - dc
-    after_r,  after_c  = right_r + dr, right_c + dc
+            if board[nr, nc] != EMPTY:
+                continue
 
-    before_empty = (_in_board(size, before_r, before_c)
-                    and board[before_r, before_c] == EMPTY)
-    after_empty  = (_in_board(size, after_r, after_c)
-                    and board[after_r, after_c] == EMPTY)
+            board[nr, nc] = player
 
-    return before_empty and after_empty
+            legal = False
+
+            if player == BLACK:
+
+                if check_win(board, nr, nc):
+
+                    if not is_overline(board, nr, nc, player):
+
+                        if count_fours(board, nr, nc, player) < 2:
+                            legal = True
+
+            else:
+
+                legal = check_win(board, nr, nc)
+
+            board[nr, nc] = EMPTY
+
+            if legal:
+                winning_moves.add((nr, nc))
+
+        if len(winning_moves) >= 2:
+            count += 1
+
+    return count
+
+# 특정 방향 열린4 여부 판정
+def _is_open_four_in_direction( board, r, c, dr, dc, player):
+
+    size = board.shape[0]
+
+    winning_moves = set()
+
+    for i in range(-5, 6):
+
+        nr = r + dr * i
+        nc = c + dc * i
+
+        if not _in_board(size, nr, nc):
+            continue
+
+        if board[nr, nc] != EMPTY:
+            continue
+
+        board[nr, nc] = player
+
+        legal = False
+
+        if player == BLACK:
+
+            if check_win(board, nr, nc):
+
+                if not is_overline(
+                    board,
+                    nr,
+                    nc,
+                    player
+                ):
+
+                    reason = get_forbidden_reason(
+                        board,
+                        nr,
+                        nc,
+                        player
+                    )
+
+                    if reason is None:
+                        legal = True
+
+        else:
+            legal = check_win(board, nr, nc)
+
+        board[nr, nc] = EMPTY
+
+        if legal:
+            winning_moves.add((nr, nc))
+
+    return len(winning_moves) >= 2
 
 def _has_open_four_in_direction(board, r, c, dr, dc, player):
     return _is_open_four_in_direction(board, r, c, dr, dc, player)
 
-# 열린 3 (Open Three) – 삼삼 판정용
-def _has_open_three_in_direction(board: np.ndarray, r: int, c: int,
-                                  dr: int, dc: int, player: int,
-                                  _depth: int = 0) -> bool:
+# 특정 방향 열린3 여부 판정
+def _has_open_three_in_direction(board, r, c, dr, dc, player, _depth=0):
+
     size = board.shape[0]
-    opponent = WHITE if player == BLACK else BLACK
 
-    # ±7 칸 라인 수집 (gap이 있는 패턴 커버)
-    line = []
-    for i in range(-7, 8):
-        nr, nc = r + dr * i, c + dc * i
-        if _in_board(size, nr, nc):
-            line.append((i, nr, nc, int(board[nr, nc])))
-        else:
-            line.append((i, nr, nc, -1))  # 벽
+    for i in range(-4, 5):
 
-    # center는 line[7] (offset=0)
-    n = len(line)
+        nr = r + dr * i
+        nc = c + dc * i
 
-    def val_at(offset):
-        idx = offset + 7
-        if 0 <= idx < n:
-            return line[idx][3]
-        return -1
+        if not _in_board(size, nr, nc):
+            continue
 
-    def coord_at(offset):
-        idx = offset + 7
-        if 0 <= idx < n:
-            return line[idx][1], line[idx][2]
-        return None
+        if board[nr, nc] != EMPTY:
+            continue
 
-    def try_completion(empty_offset: int) -> bool:
-        coord = coord_at(empty_offset)
-        if coord is None:
-            return False
-        er, ec = coord
-        if board[er, ec] != EMPTY:
-            return False
+        board[nr, nc] = player
 
-        board[er, ec] = player
-        # 1) 이 방향으로 열린 4인지
-        open4 = _is_open_four_in_direction(board, er, ec, dr, dc, player)
-        if not open4:
-            board[er, ec] = EMPTY
-            return False
-        # 2) 완성수 자체가 합법적인지 (금수 아닌지)
-        #    _depth < 1 일 때만 재귀 33 체크 (렌주 공식 해석)
+        legal = True
+
         if player == BLACK:
-            if is_overline(board, er, ec, player):
-                board[er, ec] = EMPTY
-                return False
-            if count_fours(board, er, ec, player) >= 2:
-                board[er, ec] = EMPTY
-                return False
-            if _depth < 1:
-                if count_open_threes(board, er, ec, player, _depth + 1) >= 2:
-                    board[er, ec] = EMPTY
-                    return False
-        board[er, ec] = EMPTY
-        return True
 
-    for start in range(-5, 3):
-        # 길이 5 윈도우
-        w5 = [val_at(start + k) for k in range(5)]
-        # center(offset=0) 가 윈도우 안에 있어야 함
-        if not (start <= 0 <= start + 4):
-            continue
-        # 벽/상대돌 있으면 스킵
-        if -1 in w5 or opponent in w5:
-            pass  # 뒤에서 개별 처리
-        else:
-            # player 3개 + EMPTY 2개: 2개 빈칸 중 하나가 완성수
-            if w5.count(player) == 3 and w5.count(EMPTY) == 2:
-                empty_positions = [start + k for k in range(5) if w5[k] == EMPTY]
-                # (r,c) 자신(offset=0)은 이미 player 돌이므로 빈칸이 아님 → 완성수 후보만
-                for ep in empty_positions:
-                    if try_completion(ep):
-                        return True
+            if not is_legal_black_move(
+                board,
+                nr,
+                nc,
+                _depth + 1
+            ):
+                legal = False
 
-    # gap 패턴: 길이 6 윈도우 (●●○●, ●○●● 등)
-    for start in range(-5, 2):
-        if not (start <= 0 <= start + 5):
-            continue
-        w6 = [val_at(start + k) for k in range(6)]
-        # 양 끝이 EMPTY여야 열린 패턴
-        if w6[0] != EMPTY or w6[5] != EMPTY:
-            continue
-        # 내부 4칸
-        inner = w6[1:5]
-        if -1 in inner or opponent in inner:
-            continue
-        if inner.count(player) == 3 and inner.count(EMPTY) == 1:
-            gap_local = inner.index(EMPTY)  # 0~3
-            gap_offset = start + 1 + gap_local
-            if gap_offset == 0:
-                continue  # (r,c) 자신은 이미 player
-            if try_completion(gap_offset):
-                return True
+        open_four_count = 0
+
+        if legal:
+            open_four_count = count_open_fours(
+                board,
+                nr,
+                nc,
+                player
+            )
+
+        board[nr, nc] = EMPTY
+
+        if legal and open_four_count >= 1:
+            return True
 
     return False
 
+# 흑 착수가 금수에 해당하는지 검사
+def is_legal_black_move(board, r, c, depth=0):
+
+    if is_overline(board, r, c, BLACK):
+        return False
+
+    if count_fours(board, r, c, BLACK) >= 2:
+        return False
+
+    if depth == 0:
+
+        if count_open_threes(
+            board,
+            r,
+            c,
+            BLACK,
+            depth + 1
+        ) >= 2:
+            return False
+
+    return True
+
+# 열린3 개수 계산
 def count_open_threes(board: np.ndarray, r: int, c: int,
                       player: int, _depth: int = 0) -> int:
     cnt = 0
@@ -298,6 +327,7 @@ def is_forbidden(board: np.ndarray, r: int, c: int,
     board[r, c] = EMPTY
     return False
 
+# 금수 종류 반환
 def get_forbidden_reason(board: np.ndarray, r: int, c: int,
                           player: int = BLACK) -> Optional[str]:
     if player != BLACK:
@@ -336,7 +366,7 @@ def get_all_forbidden(board: np.ndarray, player: int = BLACK) -> List[Tuple[int,
                 result.append((r, c))
     return result
 
-# 패턴 카운트 유틸 (기존 호환)
+# 연속 패턴 개수 계산 (기존 코드 호환용)
 def check_patterns(board: np.ndarray, player: int, length: int) -> int:
     size = board.shape[0]
     count = 0
